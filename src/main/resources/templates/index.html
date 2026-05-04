@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Replacer</title>
+  <link rel="stylesheet" href="/material.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">PDFBolt</a>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/about">About Us</a>
+    <a href="/contact">Contact Us</a>
+  </nav>
+</header>
+<main class="layout">
+  <aside class="suite-menu card">
+    <div class="suite-head">
+      <h2>PDFBolt Suite</h2>
+      <button id="suiteToggleButton" class="suite-toggle" type="button" aria-expanded="false" aria-controls="suiteOptions">...</button>
+    </div>
+    <p class="suite-subtitle">Build tools for every PDF workflow.</p>
+    <div id="suiteOptions" hidden>
+    <nav class="tool-list" aria-label="PDF tool menu">
+      <button type="button" class="tool-item active" data-tool="replace" data-status="live">
+        <span class="tool-name">PDFBolt Replace</span>
+        <span class="tool-badge live">Live</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="merge" data-status="wip">
+        <span class="tool-name">PDFBolt Merge</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="split" data-status="wip">
+        <span class="tool-name">PDFBolt Split</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="compress" data-status="wip">
+        <span class="tool-name">PDFBolt Compress</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="convert" data-status="wip">
+        <span class="tool-name">PDFBolt Convert</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="sign" data-status="wip">
+        <span class="tool-name">PDFBolt Sign</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+      <button type="button" class="tool-item" data-tool="extract" data-status="wip">
+        <span class="tool-name">PDFBolt Extract</span>
+        <span class="tool-badge wip">WIP</span>
+      </button>
+    </nav>
+    <section id="toolInfoPanel" class="tool-info">
+      <h3 id="toolInfoTitle">PDFBolt Replace</h3>
+      <p id="toolInfoText">Replace is live and ready to use.</p>
+    </section>
+    </div>
+  </aside>
+
+  <section class="card" id="replacePanel">
+    <header class="card-header">
+      <h1>PDFBolt Replace</h1>
+      <p>Replace text inside PDF content streams and download the edited file.</p>
+    </header>
+
+    <form id="replaceForm" class="form">
+      <label class="field">
+        <span>PDF files</span>
+        <input id="filesInput" name="files" type="file" accept="application/pdf,.pdf" multiple required>
+      </label>
+
+      <div id="changesContainer" class="form"></div>
+      <button id="addChangeButton" type="button">Add find/replace rule</button>
+
+      <div class="row">
+        <label class="field">
+          <span>Match mode</span>
+          <select name="matchMode">
+            <option value="exact">Exact</option>
+            <option value="caseInsensitive">Case-insensitive</option>
+            <option value="wholeWord">Whole-word</option>
+            <option value="caseInsensitiveWholeWord">Case-insensitive + whole-word</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Replace scope</span>
+          <select name="replaceScope" id="replaceScope">
+            <option value="all">All matches</option>
+            <option value="first">First match</option>
+            <option value="nth">Specific occurrence (N)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="row">
+        <label class="field" id="occurrenceField" hidden>
+          <span>Occurrence index (1-based)</span>
+          <input name="occurrenceIndex" id="occurrenceIndex" type="number" min="1" step="1">
+        </label>
+        <label class="field">
+          <span>Fallback font (.ttf/.otf)</span>
+          <input name="font" type="file" accept=".ttf,.otf,font/ttf,font/otf">
+        </label>
+      </div>
+
+      <label class="check">
+        <input name="strict" type="checkbox">
+        <span>Strict same-length mode</span>
+      </label>
+      <label class="check">
+        <input name="preserveStyle" type="checkbox" checked>
+        <span>Preserve original style (bold/italic/font)</span>
+      </label>
+
+      <button id="submitButton" type="submit">Replace and Download</button>
+    </form>
+
+    <p id="status" class="status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+<footer class="footer">
+  <span>PDFBolt Suite</span>
+  <nav class="footnav">
+    <a href="/">Home</a>
+    <a href="/about">About</a>
+    <a href="/contact">Contact</a>
+    <a href="/api/health">Status</a>
+  </nav>
+</footer>
+<script src="/material.js"></script>
+</body>
+</html>

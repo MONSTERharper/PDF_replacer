@@ -24,12 +24,34 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 
 public final class DeterministicPdfReplacer {
     private DeterministicPdfReplacer() {
     }
 
-    public record Result(int pagesScanned, int matchesReplaced, int segmentsChanged) {
+    public enum MatchMode {
+        EXACT,
+        CASE_INSENSITIVE,
+        WHOLE_WORD,
+        CASE_INSENSITIVE_WHOLE_WORD
+    }
+
+    public enum ReplaceScope {
+        ALL,
+        FIRST,
+        NTH
+    }
+
+    public record Result(
+            int pagesScanned,
+            int matchesFound,
+            int matchesReplaced,
+            int segmentsChanged,
+            Integer requestedOccurrence,
+            int stylePreservedCount,
+            int fallbackStyleCount
+    ) {
     }
 
     public static Result replace(
@@ -39,7 +61,7 @@ public final class DeterministicPdfReplacer {
             String replacement,
             boolean strictSameLength
     ) throws IOException {
-        return replace(input, output, search, replacement, strictSameLength, null);
+        return replace(input, output, search, replacement, strictSameLength, null, MatchMode.EXACT, ReplaceScope.ALL, null);
     }
 
     public static Result replace(
@@ -50,6 +72,46 @@ public final class DeterministicPdfReplacer {
             boolean strictSameLength,
             File substituteFontFile
     ) throws IOException {
+        return replace(input, output, search, replacement, strictSameLength, substituteFontFile, MatchMode.EXACT, ReplaceScope.ALL, null);
+    }
+
+    public static Result replace(
+            File input,
+            File output,
+            String search,
+            String replacement,
+            boolean strictSameLength,
+            File substituteFontFile,
+            MatchMode matchMode,
+            ReplaceScope replaceScope,
+            Integer requestedOccurrence
+    ) throws IOException {
+        return replace(
+                input,
+                output,
+                search,
+                replacement,
+                strictSameLength,
+                substituteFontFile,
+                matchMode,
+                replaceScope,
+                requestedOccurrence,
+                true
+        );
+    }
+
+    public static Result replace(
+            File input,
+            File output,
+            String search,
+            String replacement,
+            boolean strictSameLength,
+            File substituteFontFile,
+            MatchMode matchMode,
+            ReplaceScope replaceScope,
+            Integer requestedOccurrence,
+            boolean preserveStyle
+    ) throws IOException {
         if (search == null || search.isEmpty()) {
             throw new IllegalArgumentException("search text must not be empty");
         }
@@ -58,8 +120,11 @@ public final class DeterministicPdfReplacer {
         }
 
         int pagesScanned = 0;
+        int matchesFound = 0;
         int matchesReplaced = 0;
         int segmentsChanged = 0;
+        int stylePreservedCount = 0;
+        int fallbackStyleCount = 0;
 
         try (PDDocument document = PDDocument.load(input)) {
             PDType0Font substituteFont = loadSubstituteFont(document, substituteFontFile, replacement);
@@ -84,22 +149,45 @@ public final class DeterministicPdfReplacer {
                     segment.end = pageText.length();
                 }
 
-                List<Match> matches = findMatches(pageText.toString(), search);
+                List<Match> pageMatches = findMatches(pageText.toString(), search, matchMode);
+                if (pageMatches.isEmpty()) {
+                    continue;
+                }
+                matchesFound += pageMatches.size();
+                List<Match> matches = selectMatchesForScope(pageMatches, replaceScope, requestedOccurrence);
                 if (matches.isEmpty()) {
                     continue;
                 }
 
+                PDFont pageSubstituteFont = chooseStyleCompatibleSubstituteFont(
+                        document,
+                        substituteFont,
+                        replacement,
+                        segments,
+                        matches,
+                        preserveStyle
+                );
                 for (Match match : matches) {
-                    int changed = applyMatch(tokens, segments, match.start(), match.end(), replacement, strictSameLength, substituteFont);
+                    int changed = applyMatch(tokens, segments, match.start(), match.end(), replacement, strictSameLength, pageSubstituteFont, preserveStyle);
                     if (changed > 0) {
                         matchesReplaced++;
                         segmentsChanged += changed;
                     }
                 }
 
-                applyDynamicReplacementDraws(page, tokens, segments, substituteFontName, substituteFont);
-                if (substituteFont != null) {
-                    applySubstituteFontSwitches(page, tokens, segments, substituteFontName, substituteFont);
+                applyDynamicReplacementDraws(page, tokens, segments, substituteFontName, pageSubstituteFont);
+                if (pageSubstituteFont != null) {
+                    applySubstituteFontSwitches(page, tokens, segments, substituteFontName, pageSubstituteFont);
+                }
+                for (TextSegment segment : segments) {
+                    if (!segment.changed) {
+                        continue;
+                    }
+                    if (segment.usesSubstituteFont || segment.dynamicUsesSubstituteFont) {
+                        fallbackStyleCount++;
+                    } else {
+                        stylePreservedCount++;
+                    }
                 }
 
                 PDStream updatedStream = new PDStream(document);
@@ -113,7 +201,15 @@ public final class DeterministicPdfReplacer {
             document.save(output);
         }
 
-        return new Result(pagesScanned, matchesReplaced, segmentsChanged);
+        return new Result(
+                pagesScanned,
+                matchesFound,
+                matchesReplaced,
+                segmentsChanged,
+                requestedOccurrence,
+                stylePreservedCount,
+                fallbackStyleCount
+        );
     }
 
     public static void debugSegments(File input, String search, int contextSegments, boolean printTokens) throws IOException {
@@ -133,7 +229,7 @@ public final class DeterministicPdfReplacer {
                     segment.end = pageText.length();
                 }
 
-                List<Match> matches = findMatches(pageText.toString(), search);
+                List<Match> matches = findMatches(pageText.toString(), search, MatchMode.EXACT);
                 for (Match match : matches) {
                     System.out.println("Page " + pageNumber + " match " + match.start() + "-" + match.end());
                     int first = 0;
@@ -269,18 +365,57 @@ public final class DeterministicPdfReplacer {
         return text.toString();
     }
 
-    private static List<Match> findMatches(String text, String search) {
+    private static List<Match> findMatches(String text, String search, MatchMode matchMode) {
         List<Match> matches = new ArrayList<>();
+        String searchIn = search;
+        String textIn = text;
+        boolean wholeWord = matchMode == MatchMode.WHOLE_WORD || matchMode == MatchMode.CASE_INSENSITIVE_WHOLE_WORD;
+        if (matchMode == MatchMode.CASE_INSENSITIVE || matchMode == MatchMode.CASE_INSENSITIVE_WHOLE_WORD) {
+            searchIn = search.toLowerCase(Locale.ROOT);
+            textIn = text.toLowerCase(Locale.ROOT);
+        }
+
         int offset = 0;
         while (offset >= 0) {
-            offset = text.indexOf(search, offset);
+            offset = textIn.indexOf(searchIn, offset);
             if (offset >= 0) {
-                matches.add(new Match(offset, offset + search.length()));
+                int end = offset + search.length();
+                if (!wholeWord || isWholeWordBoundary(text, offset, end)) {
+                    matches.add(new Match(offset, end));
+                }
                 offset += search.length();
             }
         }
-        matches.sort(Comparator.comparingInt(Match::start).reversed());
         return matches;
+    }
+
+    private static boolean isWholeWordBoundary(String text, int start, int end) {
+        boolean leftBoundary = start == 0 || !isWordCharacter(text.charAt(start - 1));
+        boolean rightBoundary = end == text.length() || !isWordCharacter(text.charAt(end));
+        return leftBoundary && rightBoundary;
+    }
+
+    private static boolean isWordCharacter(char value) {
+        return Character.isLetterOrDigit(value) || value == '_';
+    }
+
+    private static List<Match> selectMatchesForScope(List<Match> orderedMatches, ReplaceScope replaceScope, Integer requestedOccurrence) {
+        if (orderedMatches.isEmpty()) {
+            return orderedMatches;
+        }
+
+        List<Match> selected = new ArrayList<>();
+        switch (replaceScope) {
+            case FIRST -> selected.add(orderedMatches.get(0));
+            case NTH -> {
+                if (requestedOccurrence != null && requestedOccurrence >= 1 && requestedOccurrence <= orderedMatches.size()) {
+                    selected.add(orderedMatches.get(requestedOccurrence - 1));
+                }
+            }
+            case ALL -> selected.addAll(orderedMatches);
+        }
+        selected.sort(Comparator.comparingInt(Match::start).reversed());
+        return selected;
     }
 
     private static int applyMatch(
@@ -290,7 +425,8 @@ public final class DeterministicPdfReplacer {
             int matchEnd,
             String replacement,
             boolean strictSameLength,
-            PDFont substituteFont
+            PDFont substituteFont,
+            boolean preserveStyle
     ) throws IOException {
         List<TextSegment> affected = segments.stream()
                 .filter(segment -> segment.end > matchStart && segment.start < matchEnd)
@@ -301,10 +437,10 @@ public final class DeterministicPdfReplacer {
         }
 
         if (strictSameLength) {
-            return applyStrictSameLength(affected, matchStart, matchEnd, replacement, substituteFont);
+            return applyStrictSameLength(affected, matchStart, matchEnd, replacement, substituteFont, preserveStyle);
         }
 
-        return applyFlexible(tokens, segments, affected, matchStart, matchEnd, replacement, substituteFont);
+        return applyFlexible(tokens, segments, affected, matchStart, matchEnd, replacement, substituteFont, preserveStyle);
     }
 
     private static int applyStrictSameLength(
@@ -312,7 +448,8 @@ public final class DeterministicPdfReplacer {
             int matchStart,
             int matchEnd,
             String replacement,
-            PDFont substituteFont
+            PDFont substituteFont,
+            boolean preserveStyle
     ) throws IOException {
         int replacementOffset = 0;
         int changed = 0;
@@ -324,7 +461,7 @@ public final class DeterministicPdfReplacer {
 
             String patch = replacement.substring(replacementOffset, replacementOffset + localLength);
             String newText = segment.text.substring(0, localStart) + patch + segment.text.substring(localEnd);
-            rewriteSegment(segment, newText, substituteFont);
+            rewriteSegment(segment, newText, substituteFont, preserveStyle);
 
             replacementOffset += localLength;
             changed++;
@@ -340,15 +477,16 @@ public final class DeterministicPdfReplacer {
             int matchStart,
             int matchEnd,
             String replacement,
-            PDFont substituteFont
+            PDFont substituteFont,
+            boolean preserveStyle
     ) throws IOException {
         if (canUseDynamicArrayReplacement(affected, matchStart, matchEnd)) {
-            return applyDynamicArrayReplacement(affected, matchStart, matchEnd, replacement, substituteFont);
+            return applyDynamicArrayReplacement(affected, matchStart, matchEnd, replacement, substituteFont, preserveStyle);
         }
 
         List<TextSegment> rewriteRun = findSameBaselineRewriteRun(allSegments, affected);
         if (rewriteRun.size() > affected.size()) {
-            return applyRunReconstruction(rewriteRun, matchStart, matchEnd, replacement, substituteFont);
+            return applyRunReconstruction(rewriteRun, matchStart, matchEnd, replacement, substituteFont, preserveStyle);
         }
 
         TextSegment first = affected.get(0);
@@ -357,7 +495,7 @@ public final class DeterministicPdfReplacer {
         String firstText = first.text.substring(0, firstLocalStart)
                 + replacement
                 + first.text.substring(firstLocalEnd);
-        rewriteSegment(first, firstText, substituteFont);
+        rewriteSegment(first, firstText, substituteFont, preserveStyle);
 
         int changed = 1;
         for (int i = 1; i < affected.size(); i++) {
@@ -365,11 +503,13 @@ public final class DeterministicPdfReplacer {
             int localStart = Math.max(0, matchStart - segment.start);
             int localEnd = Math.min(segment.text.length(), matchEnd - segment.start);
             String newText = segment.text.substring(0, localStart) + segment.text.substring(localEnd);
-            rewriteSegment(segment, newText, substituteFont);
+            rewriteSegment(segment, newText, substituteFont, preserveStyle);
             changed++;
         }
 
-        zeroInternalArraySpacing(affected);
+        if (!preserveStyle) {
+            zeroInternalArraySpacing(affected);
+        }
         StringBuilder originalMatchedText = new StringBuilder();
         for (TextSegment segment : affected) {
             originalMatchedText.append(segment.originalText);
@@ -444,7 +584,8 @@ public final class DeterministicPdfReplacer {
             int matchStart,
             int matchEnd,
             String replacement,
-            PDFont substituteFont
+            PDFont substituteFont,
+            boolean preserveStyle
     ) throws IOException {
         TextSegment first = rewriteRun.get(0);
         TextSegment last = rewriteRun.get(rewriteRun.size() - 1);
@@ -459,10 +600,10 @@ public final class DeterministicPdfReplacer {
                 + replacement
                 + originalRun.substring(localMatchEnd);
 
-        rewriteSegment(first, rebuiltRun, substituteFont);
+        rewriteSegment(first, rebuiltRun, substituteFont, preserveStyle);
         int changed = 1;
         for (int i = 1; i < rewriteRun.size(); i++) {
-            rewriteSegment(rewriteRun.get(i), "", substituteFont);
+            rewriteSegment(rewriteRun.get(i), "", substituteFont, preserveStyle);
             changed++;
         }
 
@@ -604,10 +745,11 @@ public final class DeterministicPdfReplacer {
             int matchStart,
             int matchEnd,
             String replacement,
-            PDFont substituteFont
+            PDFont substituteFont,
+            boolean preserveStyle
     ) throws IOException {
         TextSegment first = affected.get(0);
-        PDFont replacementFont = chooseEncodingFont(first.font, replacement, substituteFont);
+        PDFont replacementFont = chooseEncodingFont(first.font, replacement, substituteFont, preserveStyle);
         first.dynamicReplacementText = replacement;
         first.dynamicReplacementFont = replacementFont;
         first.dynamicUsesSubstituteFont = replacementFont == substituteFont;
@@ -617,15 +759,17 @@ public final class DeterministicPdfReplacer {
             int localStart = Math.max(0, matchStart - segment.start);
             int localEnd = Math.min(segment.text.length(), matchEnd - segment.start);
             String newText = segment.text.substring(0, localStart) + segment.text.substring(localEnd);
-            rewriteSegment(segment, newText, null);
+            rewriteSegment(segment, newText, null, preserveStyle);
             changed++;
         }
 
-        zeroInternalArraySpacing(affected);
+        if (!preserveStyle) {
+            zeroInternalArraySpacing(affected);
+        }
         return changed;
     }
 
-    private static PDFont chooseEncodingFont(PDFont originalFont, String text, PDFont substituteFont) throws IOException {
+    private static PDFont chooseEncodingFont(PDFont originalFont, String text, PDFont substituteFont, boolean preserveStyle) throws IOException {
         try {
             originalFont.encode(text);
             return originalFont;
@@ -660,7 +804,7 @@ public final class DeterministicPdfReplacer {
         }
     }
 
-    private static void rewriteSegment(TextSegment segment, String newText, PDFont substituteFont) throws IOException {
+    private static void rewriteSegment(TextSegment segment, String newText, PDFont substituteFont, boolean preserveStyle) throws IOException {
         if (segment.font instanceof PDType3Font) {
             throw new IOException("Type3 fonts are not supported by this baseline replacer");
         }
@@ -668,20 +812,82 @@ public final class DeterministicPdfReplacer {
             segment.cosString.setValue(segment.font.encode(newText));
             segment.usesSubstituteFont = false;
         } catch (IllegalArgumentException e) {
+            String originalFontName = safeFontName(segment.font);
+            String preview = previewText(newText);
             if (substituteFont == null) {
-                throw new IOException("Replacement text cannot be encoded with the original embedded font. "
+                throw new IOException("Replacement text cannot be encoded with the original embedded font '" + originalFontName + "'. "
+                        + "Failed text preview: [" + preview + "]. "
                         + "The PDF likely uses a subset font that does not contain one or more replacement glyphs. "
                         + "Try replacement text using characters already present in the PDF, or pass --font /path/to/font.ttf.", e);
             }
             try {
                 segment.cosString.setValue(substituteFont.encode(newText));
                 segment.usesSubstituteFont = true;
+                if (preserveStyle && !isStyleCompatible(segment.font, substituteFont)) {
+                    segment.styleApproximationUsed = true;
+                }
             } catch (IllegalArgumentException fallbackError) {
-                throw new IOException("Replacement text cannot be encoded with either the original embedded font "
-                        + "or the available substitute fonts. Add a broader fallback font such as Noto Sans to the server.", fallbackError);
+                throw new IOException("Replacement text cannot be encoded with original font '" + originalFontName + "' "
+                        + "or fallback font '" + safeFontName(substituteFont) + "'. "
+                        + "Failed text preview: [" + preview + "]. "
+                        + "Add a broader fallback font such as Noto Sans to the server.", fallbackError);
             }
         }
         segment.text = newText;
+        segment.changed = true;
+    }
+
+    private static String safeFontName(PDFont font) {
+        return font == null ? "unknown-font" : font.getName();
+    }
+
+    private static String previewText(String text) {
+        if (text == null) {
+            return "";
+        }
+        String compact = text.replace("\n", " ").replace("\r", " ");
+        return compact.length() <= 40 ? compact : compact.substring(0, 40) + "...";
+    }
+
+    private static PDFont chooseStyleCompatibleSubstituteFont(
+            PDDocument document,
+            PDFont currentSubstitute,
+            String replacement,
+            List<TextSegment> segments,
+            List<Match> matches,
+            boolean preserveStyle
+    ) throws IOException {
+        if (!preserveStyle || currentSubstitute == null || matches.isEmpty()) {
+            return currentSubstitute;
+        }
+        TextSegment firstAffected = findFirstAffectedSegment(segments, matches.get(matches.size() - 1));
+        if (firstAffected == null || isStyleCompatible(firstAffected.font, currentSubstitute)) {
+            return currentSubstitute;
+        }
+        PDFont styleFont = loadStyleCompatibleSubstituteFont(document, replacement, firstAffected.font);
+        return styleFont == null ? currentSubstitute : styleFont;
+    }
+
+    private static TextSegment findFirstAffectedSegment(List<TextSegment> segments, Match match) {
+        for (TextSegment segment : segments) {
+            if (segment.end > match.start() && segment.start < match.end()) {
+                return segment;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isStyleCompatible(PDFont originalFont, PDFont fallbackFont) {
+        FontStyle original = detectStyle(safeFontName(originalFont));
+        FontStyle fallback = detectStyle(safeFontName(fallbackFont));
+        return (!original.bold || fallback.bold) && (!original.italic || fallback.italic);
+    }
+
+    private static FontStyle detectStyle(String fontName) {
+        String value = fontName == null ? "" : fontName.toLowerCase(Locale.ROOT);
+        boolean bold = value.contains("bold") || value.contains("black") || value.contains("demi");
+        boolean italic = value.contains("italic") || value.contains("oblique");
+        return new FontStyle(bold, italic);
     }
 
     private static PDType0Font loadSubstituteFont(
@@ -697,6 +903,9 @@ public final class DeterministicPdfReplacer {
         candidates.add(new File("fonts/NotoSans-Regular.ttf"));
         candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
         candidates.add(new File("/System/Library/Fonts/Supplemental/Arial.ttf"));
+        candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold.ttf"));
+        candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Italic.ttf"));
+        candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"));
         candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"));
         candidates.add(new File("/Library/Fonts/Arial Unicode.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"));
@@ -715,6 +924,41 @@ public final class DeterministicPdfReplacer {
             }
         }
 
+        return null;
+    }
+
+    private static PDType0Font loadStyleCompatibleSubstituteFont(
+            PDDocument document,
+            String replacement,
+            PDFont originalFont
+    ) throws IOException {
+        FontStyle style = detectStyle(safeFontName(originalFont));
+        List<File> candidates = new ArrayList<>();
+        if (style.bold && style.italic) {
+            candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"));
+        }
+        if (style.bold) {
+            candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold.ttf"));
+        }
+        if (style.italic) {
+            candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Italic.ttf"));
+        }
+        candidates.add(new File("/System/Library/Fonts/Supplemental/Arial.ttf"));
+        candidates.add(new File("fonts/NotoSans-Regular.ttf"));
+        candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
+
+        for (File candidate : candidates) {
+            if (!candidate.isFile()) {
+                continue;
+            }
+            try {
+                PDType0Font font = PDType0Font.load(document, candidate);
+                font.encode(replacement);
+                return font;
+            } catch (IOException | IllegalArgumentException ignored) {
+                // Try next style candidate.
+            }
+        }
         return null;
     }
 
@@ -758,9 +1002,11 @@ public final class DeterministicPdfReplacer {
             tokens.add(insertBefore + 2, Operator.getOperator("Tf"));
             tokens.add(insertBefore + 3, replacementString);
             tokens.add(insertBefore + 4, Operator.getOperator("Tj"));
-            tokens.add(insertBefore + 5, segment.fontResourceName);
-            tokens.add(insertBefore + 6, segment.fontSize);
-            tokens.add(insertBefore + 7, Operator.getOperator("Tf"));
+            if (segment.dynamicUsesSubstituteFont && segment.fontResourceName != null) {
+                tokens.add(insertBefore + 5, segment.fontResourceName);
+                tokens.add(insertBefore + 6, segment.fontSize);
+                tokens.add(insertBefore + 7, Operator.getOperator("Tf"));
+            }
         }
     }
 
@@ -811,6 +1057,9 @@ public final class DeterministicPdfReplacer {
     private record FontState(PDFont font, COSName fontResourceName, COSBase fontSize) {
     }
 
+    private record FontStyle(boolean bold, boolean italic) {
+    }
+
     private static final class TextSegment {
         private final COSString cosString;
         private final PDFont font;
@@ -830,6 +1079,8 @@ public final class DeterministicPdfReplacer {
         private PDFont dynamicReplacementFont;
         private boolean dynamicUsesSubstituteFont;
         private float dynamicShiftApplied;
+        private boolean changed;
+        private boolean styleApproximationUsed;
 
         private TextSegment(
                 COSString cosString,

@@ -1,0 +1,158 @@
+:root {
+  --md-sys-color-primary: #d626ff;
+  --md-sys-color-on-primary: #ffffff;
+  --md-sys-color-surface: #faf7f2;
+  --md-sys-color-surface-container: #fffdf9;
+  --md-sys-color-on-surface: #1d1b20;
+  --md-sys-color-outline: #d8cde2;
+  --md-sys-color-error: #b3261e;
+  --md-sys-color-success: #146c2e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: Roboto, "Segoe UI", Arial, sans-serif;
+  background: var(--md-sys-color-surface);
+  color: var(--md-sys-color-on-surface);
+}
+
+a { color: var(--md-sys-color-primary); text-decoration: none; }
+
+.topbar,
+.footer {
+  max-width: 1200px;
+  margin: 18px auto 0;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.footer {
+  margin: 22px auto 28px;
+  color: #4a4458;
+  font-size: 0.9rem;
+}
+
+.brand { font-size: 1.4rem; font-weight: 700; }
+.topnav, .footnav { display: flex; gap: 14px; }
+.topnav a { color: #4a4458; font-weight: 500; }
+
+.layout {
+  max-width: 1200px;
+  margin: 20px auto;
+  padding: 0 16px;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 18px;
+}
+
+.page-wrap {
+  max-width: 920px;
+  margin: 24px auto;
+  padding: 0 16px;
+}
+
+.card {
+  background: var(--md-sys-color-surface-container);
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.suite-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.suite-menu h2 { margin: 0; font-size: 1.35rem; }
+.suite-subtitle { margin: 8px 0 18px; color: #4a4458; font-size: 0.92rem; }
+.suite-toggle {
+  width: 42px;
+  border-radius: 10px;
+  background: #f4e7ff;
+  color: #5a176a;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.tool-list { display: flex; flex-direction: column; gap: 10px; }
+.tool-item {
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: 14px;
+  padding: 10px 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+}
+.tool-item.active { border-color: var(--md-sys-color-primary); background: #fae8ff; }
+.tool-name { font-weight: 500; }
+.tool-badge { font-size: 0.74rem; border-radius: 999px; padding: 3px 8px; font-weight: 600; }
+.tool-badge.live { background: #c8f7d2; color: #0a5c23; }
+.tool-badge.wip { background: #ffe8bf; color: #7a4b00; }
+
+.tool-info {
+  margin-top: 14px;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: 14px;
+  padding: 12px;
+  background: #fff;
+}
+.tool-info h3 { margin: 0 0 6px; font-size: 1rem; }
+.tool-info p { margin: 0; color: #4a4458; font-size: 0.9rem; }
+
+.card-header h1, .page-wrap h1 { margin: 0 0 8px; font-size: 2rem; }
+.card-header p { margin: 0 0 20px; color: #4a4458; }
+
+.form { display: flex; flex-direction: column; gap: 16px; }
+.row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 16px; align-items: end; }
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field > span { font-size: 0.9rem; color: #4a4458; }
+
+input[type="text"],
+input[type="number"],
+input[type="file"],
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--md-sys-color-outline);
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+  font-family: inherit;
+}
+input[type="text"], input[type="number"], input[type="file"], select { height: 42px; }
+input[type="file"] { padding-top: 8px; }
+textarea { resize: vertical; }
+
+.check { display: flex; align-items: center; gap: 8px; }
+
+button {
+  border: 0;
+  border-radius: 20px;
+  background: var(--md-sys-color-primary);
+  color: var(--md-sys-color-on-primary);
+  height: 42px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#addChangeButton { background: #f3ddfb; color: #4a1259; }
+.remove-change { background: #f2b8b5; color: #601410; border-radius: 12px; height: 42px; padding: 0 14px; }
+
+button:disabled { opacity: 0.7; cursor: not-allowed; }
+.status { min-height: 20px; margin: 12px 0 0; }
+.status.ok { color: var(--md-sys-color-success); }
+.status.error { color: var(--md-sys-color-error); }
+
+@media (max-width: 760px) {
+  .topbar, .footer { flex-direction: column; align-items: flex-start; gap: 10px; }
+  .layout { grid-template-columns: 1fr; }
+  .row { grid-template-columns: 1fr !important; }
+}

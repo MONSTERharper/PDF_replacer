@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact PDFBolt</title>
+  <link rel="stylesheet" href="/material.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">PDFBolt</a>
+  <nav class="topnav">
+    <a href="/">Home</a>
+    <a href="/about">About Us</a>
+    <a href="/contact">Contact Us</a>
+  </nav>
+</header>
+
+<main class="page-wrap">
+  <section class="card">
+    <h1>Contact Us</h1>
+    <p>For inquiries, feature requests, or support, send us a message.</p>
+
+    <form id="contactForm" class="form">
+      <label class="field">
+        <span>Your name</span>
+        <input id="contactName" type="text" required>
+      </label>
+      <label class="field">
+        <span>Your email</span>
+        <input id="contactEmail" type="text" required>
+      </label>
+      <label class="field">
+        <span>Subject</span>
+        <input id="contactSubject" type="text" required>
+      </label>
+      <label class="field">
+        <span>Message</span>
+        <textarea id="contactMessage" rows="6" required></textarea>
+      </label>
+      <button type="submit">Send Inquiry</button>
+    </form>
+    <p id="contactStatus" class="status" role="status" aria-live="polite"></p>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>PDFBolt Suite</span>
+  <nav class="footnav">
+    <a href="/">Home</a>
+    <a href="/about">About</a>
+    <a href="/contact">Contact</a>
+    <a href="/api/health">Status</a>
+  </nav>
+</footer>
+<script src="/site.js"></script>
+</body>
+</html>
