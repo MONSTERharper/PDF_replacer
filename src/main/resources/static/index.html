@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF Replacer</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="tool">
+      <header>
+        <h1>PDF Replacer</h1>
+        <p>Replace text inside PDF content streams and download the edited file.</p>
+      </header>
+
+      <form id="replaceForm">
+        <label class="field">
+          <span>PDF file</span>
+          <input name="file" type="file" accept="application/pdf,.pdf" required>
+        </label>
+
+        <div class="grid">
+          <label class="field">
+            <span>Find</span>
+            <input name="search" type="text" placeholder="Text to replace" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span>Replace with</span>
+            <input name="replacement" type="text" placeholder="New text" autocomplete="off">
+          </label>
+        </div>
+
+        <div class="options">
+          <label class="check">
+            <input name="strict" type="checkbox">
+            <span>Strict same-length mode</span>
+          </label>
+          <label class="field font-field">
+            <span>Fallback font (.ttf)</span>
+            <input name="font" type="file" accept=".ttf,font/ttf">
+          </label>
+        </div>
+
+        <button type="submit">Replace and Download</button>
+      </form>
+
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

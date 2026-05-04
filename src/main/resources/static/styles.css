@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f7fb;
+  --panel: #ffffff;
+  --line: #d9e1ec;
+  --text: #172033;
+  --muted: #5e6b7a;
+  --accent: #1769e0;
+  --danger: #b42318;
+  --ok: #137333;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 32px 16px;
+}
+.tool {
+  width: min(760px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 28px;
+  box-shadow: 0 18px 45px rgba(23, 32, 51, 0.08);
+}
+header { margin-bottom: 24px; }
+h1 { margin: 0 0 8px; font-size: 30px; letter-spacing: 0; }
+p { margin: 0; color: var(--muted); line-height: 1.5; }
+form { display: grid; gap: 18px; }
+.field { display: grid; gap: 8px; font-weight: 650; }
+input[type="text"], input[type="file"] {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid #c8d2df;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
+  color: var(--text);
+}
+input:focus { outline: 3px solid rgba(23, 105, 224, .18); border-color: var(--accent); }
+.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.options { display: grid; grid-template-columns: minmax(220px, .7fr) 1fr; gap: 16px; align-items: end; }
+.check { min-height: 44px; display: flex; align-items: center; gap: 10px; font-weight: 650; }
+.check input { width: 18px; height: 18px; }
+button {
+  border: 0;
+  border-radius: 6px;
+  min-height: 48px;
+  padding: 13px 16px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 750;
+  cursor: pointer;
+}
+button:disabled { opacity: .65; cursor: wait; }
+.status { min-height: 24px; margin-top: 16px; font-weight: 650; }
+.status.error { color: var(--danger); }
+.status.ok { color: var(--ok); }
+@media (max-width: 700px) {
+  .tool { padding: 20px; }
+  .grid, .options { grid-template-columns: 1fr; }
+}
