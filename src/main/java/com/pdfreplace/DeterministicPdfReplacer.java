@@ -182,6 +182,8 @@ public final class DeterministicPdfReplacer {
         PDFont currentFont = null;
         COSName currentFontResourceName = null;
         COSBase currentFontSize = null;
+        float currentX = 0;
+        float currentY = 0;
         PDResources resources = page.getResources();
 
         for (int i = 0; i < tokens.size(); i++) {
@@ -196,10 +198,20 @@ public final class DeterministicPdfReplacer {
                 currentFont = fontState.font();
                 currentFontResourceName = fontState.fontResourceName();
                 currentFontSize = fontState.fontSize();
+            } else if ("Tm".equals(op)) {
+                if (i >= 6 && tokens.get(i - 2) instanceof COSNumber x && tokens.get(i - 1) instanceof COSNumber y) {
+                    currentX = x.floatValue();
+                    currentY = y.floatValue();
+                }
+            } else if ("Td".equals(op)) {
+                if (i >= 2 && tokens.get(i - 2) instanceof COSNumber dx && tokens.get(i - 1) instanceof COSNumber dy) {
+                    currentX += dx.floatValue();
+                    currentY += dy.floatValue();
+                }
             } else if ("Tj".equals(op) || "'".equals(op) || "\"".equals(op)) {
                 Object textToken = previousTextOperand(tokens, i);
                 if (textToken instanceof COSString cosString && currentFont != null) {
-                    segments.add(new TextSegment(cosString, currentFont, decode(currentFont, cosString), null, -1, i, currentFontResourceName, currentFontSize));
+                    segments.add(new TextSegment(cosString, currentFont, decode(currentFont, cosString), null, -1, i, currentFontResourceName, currentFontSize, currentX, currentY));
                 }
             } else if ("TJ".equals(op)) {
                 Object textArray = previousTextOperand(tokens, i);
@@ -207,7 +219,7 @@ public final class DeterministicPdfReplacer {
                     for (int itemIndex = 0; itemIndex < array.size(); itemIndex++) {
                         COSBase item = array.get(itemIndex);
                         if (item instanceof COSString cosString) {
-                            segments.add(new TextSegment(cosString, currentFont, decode(currentFont, cosString), array, itemIndex, i, currentFontResourceName, currentFontSize));
+                            segments.add(new TextSegment(cosString, currentFont, decode(currentFont, cosString), array, itemIndex, i, currentFontResourceName, currentFontSize, currentX, currentY));
                         }
                     }
                 }
@@ -334,6 +346,11 @@ public final class DeterministicPdfReplacer {
             return applyDynamicArrayReplacement(affected, matchStart, matchEnd, replacement, substituteFont);
         }
 
+        List<TextSegment> rewriteRun = findSameBaselineRewriteRun(allSegments, affected);
+        if (rewriteRun.size() > affected.size()) {
+            return applyRunReconstruction(rewriteRun, matchStart, matchEnd, replacement, substituteFont);
+        }
+
         TextSegment first = affected.get(0);
         int firstLocalStart = Math.max(0, matchStart - first.start);
         int firstLocalEnd = Math.min(first.text.length(), matchEnd - first.start);
@@ -360,6 +377,95 @@ public final class DeterministicPdfReplacer {
         if (replacement.length() != originalMatchedText.length()) {
             shiftFollowingPositionedText(tokens, allSegments, affected, replacement, first.usesSubstituteFont ? substituteFont : first.font);
         }
+        return changed;
+    }
+
+    private static List<TextSegment> findSameBaselineRewriteRun(List<TextSegment> allSegments, List<TextSegment> affected) {
+        TextSegment first = affected.get(0);
+        TextSegment last = affected.get(affected.size() - 1);
+        int firstIndex = allSegments.indexOf(first);
+        int lastIndex = allSegments.indexOf(last);
+        if (firstIndex < 0 || lastIndex < 0) {
+            return affected;
+        }
+
+        List<TextSegment> run = new ArrayList<>();
+        TextSegment previous = null;
+        for (int i = firstIndex; i < allSegments.size(); i++) {
+            TextSegment candidate = allSegments.get(i);
+            if (previous != null && !isContiguousTextRun(previous, candidate)) {
+                break;
+            }
+            run.add(candidate);
+            previous = candidate;
+        }
+        return run;
+    }
+
+    private static boolean isContiguousTextRun(TextSegment previous, TextSegment candidate) {
+        int operatorGap = candidate.operatorIndex - previous.operatorIndex;
+        if (operatorGap <= 0 || operatorGap > 25) {
+            return false;
+        }
+        if (candidate.x + 2.0f < previous.x) {
+            return false;
+        }
+
+        float gap = candidate.x - previous.x;
+        float expectedAdvance = estimateSegmentAdvance(previous);
+        float extraGap = gap - expectedAdvance;
+        if (extraGap > largeFieldGapThreshold(previous)) {
+            return false;
+        }
+
+        String text = candidate.originalText;
+        return !text.contains("\n") && !text.contains("\r");
+    }
+
+    private static float estimateSegmentAdvance(TextSegment segment) {
+        if (segment.text == null || segment.text.isEmpty()) {
+            return 0;
+        }
+        try {
+            float fontSize = segment.fontSize instanceof COSNumber size ? size.floatValue() : 12.0f;
+            return segment.font.getStringWidth(segment.originalText) / 1000.0f * fontSize;
+        } catch (IOException | IllegalArgumentException e) {
+            return 0;
+        }
+    }
+
+    private static float largeFieldGapThreshold(TextSegment segment) {
+        float fontSize = segment.fontSize instanceof COSNumber size ? size.floatValue() : 12.0f;
+        return Math.max(12.0f, fontSize * 1.2f);
+    }
+
+    private static int applyRunReconstruction(
+            List<TextSegment> rewriteRun,
+            int matchStart,
+            int matchEnd,
+            String replacement,
+            PDFont substituteFont
+    ) throws IOException {
+        TextSegment first = rewriteRun.get(0);
+        TextSegment last = rewriteRun.get(rewriteRun.size() - 1);
+        StringBuilder originalRun = new StringBuilder();
+        for (TextSegment segment : rewriteRun) {
+            originalRun.append(segment.originalText);
+        }
+
+        int localMatchStart = Math.max(0, matchStart - first.start);
+        int localMatchEnd = Math.min(originalRun.length(), matchEnd - first.start);
+        String rebuiltRun = originalRun.substring(0, localMatchStart)
+                + replacement
+                + originalRun.substring(localMatchEnd);
+
+        rewriteSegment(first, rebuiltRun, substituteFont);
+        int changed = 1;
+        for (int i = 1; i < rewriteRun.size(); i++) {
+            rewriteSegment(rewriteRun.get(i), "", substituteFont);
+            changed++;
+        }
+
         return changed;
     }
 
@@ -713,6 +819,8 @@ public final class DeterministicPdfReplacer {
         private final int operatorIndex;
         private final COSName fontResourceName;
         private final COSBase fontSize;
+        private final float x;
+        private final float y;
         private final String originalText;
         private String text;
         private int start;
@@ -731,7 +839,9 @@ public final class DeterministicPdfReplacer {
                 int arrayIndex,
                 int operatorIndex,
                 COSName fontResourceName,
-                COSBase fontSize
+                COSBase fontSize,
+                float x,
+                float y
         ) {
             this.cosString = cosString;
             this.font = font;
@@ -742,6 +852,8 @@ public final class DeterministicPdfReplacer {
             this.operatorIndex = operatorIndex;
             this.fontResourceName = fontResourceName;
             this.fontSize = fontSize;
+            this.x = x;
+            this.y = y;
         }
     }
 }
