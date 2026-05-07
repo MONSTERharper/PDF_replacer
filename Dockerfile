@@ -1,8 +1,17 @@
+FROM node:22-bookworm-slim AS frontend
+WORKDIR /build
+COPY pom.xml .
+COPY src ./src
+COPY "NEW UI/package.json" "NEW UI/package-lock.json" ./new-ui/
+RUN cd new-ui && npm ci
+COPY "NEW UI/" ./new-ui/
+RUN cd new-ui && npm run build
+
 FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY pom.xml .
 RUN mvn -q -DskipTests dependency:go-offline
-COPY src ./src
+COPY --from=frontend /build/src ./src
 RUN mvn -q -DskipTests package
 
 FROM eclipse-temurin:17-jre

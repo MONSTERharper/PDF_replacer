@@ -157,7 +157,7 @@ form.addEventListener("submit", async (event) => {
     const blob = await response.blob();
     const disposition = response.headers.get("content-disposition") || "";
     const match = disposition.match(/filename="?([^";]+)"?/i);
-    const filename = match ? match[1] : "replaced.pdf";
+    const filename = match ? match[1] : "bolt_document_replaced.pdf";
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

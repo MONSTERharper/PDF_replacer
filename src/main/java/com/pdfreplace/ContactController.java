@@ -19,8 +19,11 @@ public class ContactController {
 
     @PostMapping("/contact")
     public ResponseEntity<Map<String, Object>> sendInquiry(@RequestBody ContactRequest request) {
-        contactService.sendInquiry(request);
-        return ResponseEntity.ok(Map.of("status", "ok", "message", "Inquiry sent successfully."));
+        boolean emailed = contactService.sendInquiry(request);
+        String msg = emailed
+                ? "Inquiry sent successfully."
+                : "Inquiry recorded (CONTACT_LOG_ONLY=true; email not sent—see server logs).";
+        return ResponseEntity.ok(Map.of("status", "ok", "message", msg));
     }
 
     public record ContactRequest(String name, String email, String subject, String message) {

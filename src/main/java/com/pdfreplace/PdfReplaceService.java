@@ -95,7 +95,7 @@ public class PdfReplaceService {
                 zip.closeEntry();
             }
         }
-        return new BatchReplacementOutput("replaced-pdfs.zip", bytes.toByteArray(), "application/zip", summary);
+        return new BatchReplacementOutput("bolt_batch_replaced.zip", bytes.toByteArray(), "application/zip", summary);
     }
 
     private ReplacementOutput replaceSingle(
@@ -285,7 +285,10 @@ public class PdfReplaceService {
         }
     }
 
-    private static String outputName(String originalName) {
+    /**
+     * @param role {@code "replaced"} for text replacement; {@code "merged"} when PDFs are combined into one file.
+     */
+    private static String boltPdfFilename(String originalName, String role) {
         String base = originalName == null || originalName.isBlank() ? "document" : originalName;
         base = Path.of(base).getFileName().toString();
         base = base.replaceAll("[\\r\\n\\\\/]+", "_");
@@ -293,7 +296,11 @@ public class PdfReplaceService {
         if (base.isBlank()) {
             base = "document";
         }
-        return base + "-replaced.pdf";
+        return "bolt_" + base + "_" + role + ".pdf";
+    }
+
+    private static String outputName(String originalName) {
+        return boltPdfFilename(originalName, "replaced");
     }
 
     private static String safeFilename(String name) {
