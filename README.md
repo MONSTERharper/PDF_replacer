@@ -9,6 +9,32 @@ It edits PDF text drawing operands such as `Tj` and `TJ`. It does not use the vi
 - JDK 17+
 - Maven
 
+## Run Web App (Contact page + API)
+
+The web app uses environment variables for SMTP (see `src/main/resources/application.properties`).
+
+### Docker (recommended)
+
+1. Create your env file:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit `.env` and set:
+
+- `SMTP_HOST`, `SMTP_PORT`
+- `SMTP_USERNAME`, `SMTP_PASSWORD`
+- `MAIL_FROM`
+
+3. Start:
+
+```bash
+docker compose up --build
+```
+
+The app listens on `http://localhost:8080` by default.
+
 ## Run Replacement
 
 ```bash
