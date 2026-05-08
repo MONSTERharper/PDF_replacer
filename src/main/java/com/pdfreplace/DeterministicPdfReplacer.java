@@ -895,6 +895,7 @@ public final class DeterministicPdfReplacer {
             File requestedFontFile,
             String replacement
     ) throws IOException {
+        boolean debugFonts = Boolean.parseBoolean(System.getProperty("pdfreplacer.debugFonts", "false"));
         List<File> candidates = new ArrayList<>();
         if (requestedFontFile != null) {
             candidates.add(requestedFontFile);
@@ -914,18 +915,31 @@ public final class DeterministicPdfReplacer {
         candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
 
         for (File candidate : candidates) {
-            if (!candidate.isFile()) {
+            boolean exists = candidate.isFile();
+            if (debugFonts) {
+                System.out.println("DEBUG: Trying font: " + candidate.getAbsolutePath() + " exists=" + exists);
+            }
+            if (!exists) {
                 continue;
             }
             try {
                 PDType0Font font = PDType0Font.load(document, candidate);
                 font.encode(replacement);
+                if (debugFonts) {
+                    System.out.println("DEBUG: Successfully loaded font: " + candidate.getAbsolutePath());
+                }
                 return font;
-            } catch (IOException | IllegalArgumentException ignored) {
+            } catch (IOException | IllegalArgumentException e) {
+                if (debugFonts) {
+                    System.out.println("DEBUG: Failed font: " + candidate.getAbsolutePath() + " reason: " + e.getMessage());
+                }
                 // Try the next fallback font.
             }
         }
 
+        if (debugFonts) {
+            System.out.println("DEBUG: No substitute font found!");
+        }
         return null;
     }
 
