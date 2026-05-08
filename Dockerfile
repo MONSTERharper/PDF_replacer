@@ -17,7 +17,14 @@ RUN mvn -q -DskipTests package
 FROM eclipse-temurin:17-jre
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fontconfig fonts-dejavu-core fonts-noto-core \
+    && apt-get install -y --no-install-recommends \
+    fontconfig \
+    fonts-dejavu-core \
+    fonts-noto-core \
+    fonts-liberation \
+    fonts-urw-base35 \
+    fonts-freefont-ttf \
+    fonts-open-sans \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/target/*.jar app.jar
 EXPOSE 8080
