@@ -900,13 +900,13 @@ public final class DeterministicPdfReplacer {
             candidates.add(requestedFontFile);
         }
 
-        // Linux paths (primary)
+        // Linux paths (confirmed available in Docker)
         candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSans.ttf"));
-        candidates.add(new File("/usr/share/fonts/truetype/urw-base35/NimbusSans-Regular.ttf"));
-        // macOS paths (fallback)
+        candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf"));
+        // macOS paths (local dev)
         candidates.add(new File("/System/Library/Fonts/Supplemental/Arial.ttf"));
         candidates.add(new File("/Library/Fonts/Arial Unicode.ttf"));
         // Local paths
@@ -938,23 +938,35 @@ public final class DeterministicPdfReplacer {
         List<File> candidates = new ArrayList<>();
         if (style.bold && style.italic) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansBoldOblique.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-BoldItalic.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-SemiboldItalic.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-ExtraBoldItalic.ttf"));
             candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"));
         }
         if (style.bold) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-Bold.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-Semibold.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-ExtraBold.ttf"));
             candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold.ttf"));
         }
         if (style.italic) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansOblique.ttf"));
+            candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-Italic.ttf"));
             candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Italic.ttf"));
         }
+        // Regular fallbacks
         candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSans.ttf"));
+        candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-Regular.ttf"));
         candidates.add(new File("/System/Library/Fonts/Supplemental/Arial.ttf"));
         candidates.add(new File("fonts/NotoSans-Regular.ttf"));
         candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
