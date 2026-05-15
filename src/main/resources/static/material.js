@@ -125,15 +125,12 @@ form.addEventListener("submit", async (event) => {
       data.append("replacement", replacementInputs[i].value || "");
     }
 
-    const fontInput = form.querySelector('input[name="font"]');
-    const font = fontInput && fontInput.files && fontInput.files[0] ? fontInput.files[0] : null;
-    if (font) {
-      data.append("font", font);
-    }
     data.append("matchMode", form.matchMode.value);
     data.append("replaceScope", form.replaceScope.value);
-    data.set("strict", form.strict.checked ? "true" : "false");
+    data.set("strict", "false");
     data.set("preserveStyle", form.preserveStyle.checked ? "true" : "false");
+    const retainMetadataInput = form.querySelector('input[name="retainMetadata"]');
+    data.set("retainMetadata", retainMetadataInput && retainMetadataInput.checked ? "true" : "false");
     if (data.get("replaceScope") !== "nth") {
       data.delete("occurrenceIndex");
     }

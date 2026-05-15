@@ -52,6 +52,7 @@ public class PdfReplaceService {
             String replaceScopeRaw,
             Integer occurrenceIndex,
             boolean preserveStyle,
+            boolean retainMetadata,
             MultipartFile fallbackFont
     ) throws IOException {
         validateBatch(pdfFiles, searchList, replacementList, replaceScopeRaw, occurrenceIndex);
@@ -63,7 +64,8 @@ public class PdfReplaceService {
         DeterministicPdfReplacer.Result summary = new DeterministicPdfReplacer.Result(0, 0, 0, 0, occurrenceIndex, 0, 0);
         int totalPagesProcessed = 0;
         for (MultipartFile pdf : pdfFiles) {
-            ReplacementOutput item = replaceSingle(pdf, rules, strict, matchMode, replaceScope, occurrenceIndex, preserveStyle, fallbackFont);
+            ReplacementOutput item = replaceSingle(
+                    pdf, rules, strict, matchMode, replaceScope, occurrenceIndex, preserveStyle, retainMetadata, fallbackFont);
             outputs.add(item);
             totalPagesProcessed += item.result().pagesScanned();
             if (totalPagesProcessed > maxTotalPages) {
@@ -106,6 +108,7 @@ public class PdfReplaceService {
             DeterministicPdfReplacer.ReplaceScope replaceScope,
             Integer occurrenceIndex,
             boolean preserveStyle,
+            boolean retainMetadata,
             MultipartFile fallbackFont
     ) throws IOException {
         Path workDir = Files.createTempDirectory("pdf-replacer-");
@@ -141,7 +144,8 @@ public class PdfReplaceService {
                         matchMode,
                         replaceScope,
                         occurrenceIndex,
-                        preserveStyle
+                        preserveStyle,
+                        retainMetadata
                 );
                 aggregate = new DeterministicPdfReplacer.Result(
                         aggregate.pagesScanned() + result.pagesScanned(),

@@ -27,6 +27,99 @@ import {
 
 type View = 'dashboard' | 'replace' | 'merge' | 'split' | 'compress' | 'convert' | 'sign' | 'extract' | 'metadata' | 'about' | 'contact';
 
+const OPTION_CHECKED = 'bg-[#FF3300] text-white border-[#FF3300]';
+
+const ENGINE_NOTE =
+  'Deterministic replacement ensures no layout shifts.';
+
+function InfoHint({ text, className = '' }: { text: string; className?: string }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <motion.div ref={rootRef} className={`relative inline-flex ${className}`}>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[#141414]/30 font-mono text-[10px] font-bold leading-none text-[#141414]/70 transition-colors hover:border-[#FF3300] hover:text-[#FF3300]"
+        aria-expanded={open}
+        aria-label="More information"
+      >
+        i
+      </button>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="tooltip"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            className="absolute left-0 top-full z-50 mt-1.5 w-64 border border-[#141414] bg-white p-3 text-[10px] font-mono leading-snug text-[#141414] shadow-[4px_4px_0px_#141414]"
+          >
+            {text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+function ReplaceOptionRow({
+  checked,
+  onToggle,
+  label,
+  info,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  label: string;
+  info?: string;
+}) {
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        className={`flex h-5 w-5 shrink-0 items-center justify-center border border-[#141414] transition-colors ${
+          checked ? OPTION_CHECKED : 'bg-white'
+        }`}
+        aria-pressed={checked}
+      >
+        {checked && <CheckCircle2 size={12} />}
+      </button>
+      <span
+        className={`text-xs font-bold uppercase tracking-tighter transition-colors ${
+          checked ? 'text-[#FF3300]' : ''
+        }`}
+      >
+        {label}
+      </span>
+      {info ? <InfoHint text={info} /> : null}
+    </div>
+  );
+}
+
 const BoltBrand = ({ text, className = "" }: { text: string, className?: string }) => {
   const parts = text.split(/(bolt)/gi);
   return (
@@ -50,14 +143,12 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [log, setLog] = useState<{ msg: string; type: 'info' | 'success' | 'error' }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const fontInputRef = useRef<HTMLInputElement>(null);
 
   const [matchMode, setMatchMode] = useState<MatchMode>('exact');
   const [replaceScope, setReplaceScope] = useState<ApiReplaceScope>('all');
   const [occurrenceIndex, setOccurrenceIndex] = useState(1);
   const [preserveStyle, setPreserveStyle] = useState(true);
-  const [strict, setStrict] = useState(false);
-  const [fontFile, setFontFile] = useState<File | null>(null);
+  const [retainMetadata, setRetainMetadata] = useState(true);
 
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
@@ -99,12 +190,6 @@ export default function App() {
     addLog(`Loaded ${pdfs.length} PDF file(s).`, 'info');
   };
 
-  const handleFontUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0];
-    setFontFile(f ?? null);
-    if (f) addLog(`Fallback font: ${f.name}`, 'info');
-  };
-
   const handleRunReplacement = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
@@ -123,9 +208,9 @@ export default function App() {
         matchMode,
         replaceScope,
         occurrenceIndex: replaceScope === 'nth' ? occurrenceIndex : undefined,
-        strict,
+        strict: false,
         preserveStyle,
-        font: fontFile,
+        retainMetadata,
       });
       const url = URL.createObjectURL(result.blob);
       const a = document.createElement('a');
@@ -319,9 +404,12 @@ export default function App() {
   const renderReplace = () => (
     <div className="max-w-4xl mx-auto p-8 space-y-10">
       <header className="space-y-2">
-        <h2 className="text-4xl font-black tracking-tighter">
-          <BoltBrand text="bolt replace" />
-        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-4xl font-black tracking-tighter">
+            <BoltBrand text="bolt replace" />
+          </h2>
+          <InfoHint text={ENGINE_NOTE} />
+        </div>
         <p className="text-sm opacity-60 font-mono">
           Replace text inside PDF content streams and download the edited file.
         </p>
@@ -455,46 +543,21 @@ export default function App() {
               <p className="text-[9px] opacity-40 font-mono italic">Occurrence index (1-based)</p>
             </div>
 
-            <div className="space-y-2">
-              <label className="text-[10px] font-mono uppercase opacity-50 block">Fallback font (.ttf/.otf)</label>
-              <div className="flex flex-wrap items-center gap-4">
-                <button type="button" onClick={() => fontInputRef.current?.click()} className="bg-white border border-[#141414] px-3 py-1.5 text-[10px] font-bold uppercase transition-colors hover:bg-gray-50">
-                  Choose File
-                </button>
-                <span className="text-[10px] font-mono opacity-40">{fontFile ? fontFile.name : 'No file chosen'}</span>
-                <input type="file" ref={fontInputRef} onChange={handleFontUpload} accept=".ttf,.otf,font/ttf,font/otf" className="hidden" />
-              </div>
-            </div>
           </div>
 
           <div className="space-y-4 pt-6">
-             <div className="flex items-center gap-3">
-               <button 
-                 type="button"
-                 onClick={() => setStrict(!strict)}
-                 className={`w-5 h-5 border border-[#141414] flex items-center justify-center transition-colors ${strict ? 'bg-[#FF3300] text-white border-[#FF3300]' : 'bg-white'}`}
-               >
-                 {strict && <CheckCircle2 size={12} />}
-               </button>
-               <span className="text-xs font-bold uppercase tracking-tighter">Strict same-length mode</span>
-             </div>
-
-             <div className="flex items-center gap-3">
-               <button 
-                 type="button"
-                 onClick={() => setPreserveStyle(!preserveStyle)}
-                 className={`w-5 h-5 border border-[#141414] flex items-center justify-center transition-colors ${preserveStyle ? 'bg-[#141414] text-white' : 'bg-white'}`}
-               >
-                 {preserveStyle && <CheckCircle2 size={12} />}
-               </button>
-               <span className="text-xs font-bold uppercase tracking-tighter">Preserve original style (bold/italic/font)</span>
-             </div>
-             
-             <div className="mt-8 p-4 bg-[#FF3300]/5 border border-[#FF3300]/10 rounded-sm">
-                <p className="text-[10px] font-mono leading-tight opacity-70">
-                  <span className="font-bold text-[#FF3300]">ENGINE_NOTE:</span> Deterministic replacement ensures no layout shifts. If "Strict mode" is enabled, ensure finding and replacement strings match in character count.
-                </p>
-             </div>
+             <ReplaceOptionRow
+               checked={preserveStyle}
+               onToggle={() => setPreserveStyle(!preserveStyle)}
+               label="Preserve original style"
+               info="Keeps bold, italic, and the original font from the matched text."
+             />
+             <ReplaceOptionRow
+               checked={retainMetadata}
+               onToggle={() => setRetainMetadata(!retainMetadata)}
+               label="Retain original PDF metadata"
+               info="Keeps the PDF title, author, and document dates unchanged."
+             />
           </div>
         </div>
 

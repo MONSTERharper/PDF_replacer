@@ -33,7 +33,7 @@ export async function postReplaceBatch(params: {
   occurrenceIndex?: number;
   strict: boolean;
   preserveStyle: boolean;
-  font?: File | null;
+  retainMetadata: boolean;
 }): Promise<ReplaceApiResult> {
   const data = new FormData();
   for (const file of params.files) {
@@ -47,9 +47,7 @@ export async function postReplaceBatch(params: {
   data.append('replaceScope', params.replaceScope);
   data.set('strict', params.strict ? 'true' : 'false');
   data.set('preserveStyle', params.preserveStyle ? 'true' : 'false');
-  if (params.font) {
-    data.append('font', params.font);
-  }
+  data.set('retainMetadata', params.retainMetadata ? 'true' : 'false');
   if (params.replaceScope !== 'nth') {
     data.delete('occurrenceIndex');
   } else if (params.occurrenceIndex != null) {

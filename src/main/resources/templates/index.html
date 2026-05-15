@@ -62,7 +62,13 @@
 
   <section class="card" id="replacePanel">
     <header class="card-header">
-      <h1>PDFBolt Replace</h1>
+      <div class="card-title-row">
+        <h1>PDFBolt Replace</h1>
+        <details class="info-hint-details">
+          <summary class="info-hint" aria-label="Engine note">i</summary>
+          <p class="info-popover">Deterministic replacement ensures no layout shifts.</p>
+        </details>
+      </div>
       <p>Replace text inside PDF content streams and download the edited file.</p>
     </header>
 
@@ -100,20 +106,28 @@
           <span>Occurrence index (1-based)</span>
           <input name="occurrenceIndex" id="occurrenceIndex" type="number" min="1" step="1">
         </label>
-        <label class="field">
-          <span>Fallback font (.ttf/.otf)</span>
-          <input name="font" type="file" accept=".ttf,.otf,font/ttf,font/otf">
-        </label>
       </div>
 
-      <label class="check">
-        <input name="strict" type="checkbox">
-        <span>Strict same-length mode</span>
-      </label>
-      <label class="check">
-        <input name="preserveStyle" type="checkbox" checked>
-        <span>Preserve original style (bold/italic/font)</span>
-      </label>
+      <div class="check">
+        <label class="check-label">
+          <input name="preserveStyle" type="checkbox" checked>
+          <span>Preserve original style</span>
+        </label>
+        <details class="info-hint-details">
+          <summary class="info-hint" aria-label="Preserve original style">i</summary>
+          <p class="info-popover">Keeps bold, italic, and the original font from the matched text.</p>
+        </details>
+      </div>
+      <div class="check">
+        <label class="check-label">
+          <input name="retainMetadata" type="checkbox" checked>
+          <span>Retain original PDF metadata</span>
+        </label>
+        <details class="info-hint-details">
+          <summary class="info-hint" aria-label="Retain original PDF metadata">i</summary>
+          <p class="info-popover">Keeps the PDF title, author, and document dates unchanged.</p>
+        </details>
+      </div>
 
       <button id="submitButton" type="submit">Replace and Download</button>
     </form>

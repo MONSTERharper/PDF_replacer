@@ -33,6 +33,7 @@ public class PdfReplaceController {
             @RequestParam(value = "replaceScope", defaultValue = "all") String replaceScope,
             @RequestParam(value = "occurrenceIndex", required = false) Integer occurrenceIndex,
             @RequestParam(value = "preserveStyle", defaultValue = "true") boolean preserveStyle,
+            @RequestParam(value = "retainMetadata", defaultValue = "true") boolean retainMetadata,
             @RequestParam(value = "font", required = false) MultipartFile font
     ) throws Exception {
         PdfReplaceService.BatchReplacementOutput output = service.replaceBatch(
@@ -44,6 +45,7 @@ public class PdfReplaceController {
                 replaceScope,
                 occurrenceIndex,
                 preserveStyle,
+                retainMetadata,
                 font
         );
         return ResponseEntity.ok()

@@ -10,7 +10,9 @@ import org.apache.pdfbox.cos.COSName;
 import org.apache.pdfbox.cos.COSNumber;
 import org.apache.pdfbox.cos.COSString;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDDocumentInformation;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.common.PDMetadata;
 import org.apache.pdfbox.pdmodel.common.PDStream;
 import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
@@ -20,6 +22,7 @@ import org.apache.pdfbox.pdmodel.PDResources;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -96,6 +99,7 @@ public final class DeterministicPdfReplacer {
                 matchMode,
                 replaceScope,
                 requestedOccurrence,
+                true,
                 true
         );
     }
@@ -112,6 +116,34 @@ public final class DeterministicPdfReplacer {
             Integer requestedOccurrence,
             boolean preserveStyle
     ) throws IOException {
+        return replace(
+                input,
+                output,
+                search,
+                replacement,
+                strictSameLength,
+                substituteFontFile,
+                matchMode,
+                replaceScope,
+                requestedOccurrence,
+                preserveStyle,
+                true
+        );
+    }
+
+    public static Result replace(
+            File input,
+            File output,
+            String search,
+            String replacement,
+            boolean strictSameLength,
+            File substituteFontFile,
+            MatchMode matchMode,
+            ReplaceScope replaceScope,
+            Integer requestedOccurrence,
+            boolean preserveStyle,
+            boolean retainMetadata
+    ) throws IOException {
         if (search == null || search.isEmpty()) {
             throw new IllegalArgumentException("search text must not be empty");
         }
@@ -127,6 +159,7 @@ public final class DeterministicPdfReplacer {
         int fallbackStyleCount = 0;
 
         try (PDDocument document = PDDocument.load(input)) {
+            MetadataSnapshot metadataSnapshot = retainMetadata ? captureMetadata(document) : null;
             PDType0Font substituteFont = loadSubstituteFont(document, substituteFontFile, replacement);
             COSName substituteFontName = COSName.getPDFName("FSubPdfReplace");
 
@@ -198,6 +231,11 @@ public final class DeterministicPdfReplacer {
                 page.setContents(updatedStream);
             }
 
+            if (metadataSnapshot != null) {
+                restoreMetadata(document, metadataSnapshot);
+            } else {
+                PdfBoltMetadata.applyBranding(document);
+            }
             document.save(output);
         }
 
@@ -210,6 +248,42 @@ public final class DeterministicPdfReplacer {
                 stylePreservedCount,
                 fallbackStyleCount
         );
+    }
+
+    private static MetadataSnapshot captureMetadata(PDDocument document) throws IOException {
+        PDDocumentInformation infoCopy = new PDDocumentInformation();
+        PDDocumentInformation info = document.getDocumentInformation();
+        if (info != null) {
+            infoCopy.setTitle(info.getTitle());
+            infoCopy.setAuthor(info.getAuthor());
+            infoCopy.setSubject(info.getSubject());
+            infoCopy.setKeywords(info.getKeywords());
+            infoCopy.setCreator(info.getCreator());
+            infoCopy.setProducer(info.getProducer());
+            infoCopy.setCreationDate(info.getCreationDate());
+            infoCopy.setModificationDate(info.getModificationDate());
+            infoCopy.setTrapped(info.getTrapped());
+        }
+        byte[] xmp = null;
+        PDMetadata metadata = document.getDocumentCatalog().getMetadata();
+        if (metadata != null) {
+            try (InputStream in = metadata.exportXMPMetadata()) {
+                xmp = in.readAllBytes();
+            }
+        }
+        return new MetadataSnapshot(infoCopy, xmp);
+    }
+
+    private static void restoreMetadata(PDDocument document, MetadataSnapshot snapshot) throws IOException {
+        document.setDocumentInformation(snapshot.info());
+        if (snapshot.xmp() != null && snapshot.xmp().length > 0) {
+            PDMetadata metadata = new PDMetadata(document);
+            metadata.importXMPMetadata(snapshot.xmp());
+            document.getDocumentCatalog().setMetadata(metadata);
+        }
+    }
+
+    private record MetadataSnapshot(PDDocumentInformation info, byte[] xmp) {
     }
 
     public static void debugSegments(File input, String search, int contextSegments, boolean printTokens) throws IOException {
