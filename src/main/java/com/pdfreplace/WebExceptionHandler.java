@@ -47,7 +47,11 @@ public class WebExceptionHandler {
 
     @ExceptionHandler(IOException.class)
     public ResponseEntity<Map<String, Object>> processingError(IOException exception) {
-        return json(HttpStatus.UNPROCESSABLE_ENTITY, "processing_error", exception.getMessage());
+        String detail = exception.getMessage();
+        if (detail == null || detail.isBlank()) {
+            detail = "PDF processing failed. Check server logs and try exporting the PDF without subset-only embedding.";
+        }
+        return json(HttpStatus.UNPROCESSABLE_ENTITY, "processing_error", detail);
     }
 
     @ExceptionHandler(MailException.class)

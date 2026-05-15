@@ -29,6 +29,26 @@ final class PdfTestSupport {
         return path.toFile();
     }
 
+    /**
+     * Like {@link #createPdfWithText(Path, String)} but sets an explicit PDF {@code Tw} operand before drawing.
+     */
+    static java.io.File createPdfWithWordSpacing(Path path, String text, float wordSpacingPdfUnits) throws IOException {
+        try (PDDocument document = new PDDocument()) {
+            PDPage page = new PDPage();
+            document.addPage(page);
+            try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 12);
+                stream.setWordSpacing(wordSpacingPdfUnits);
+                stream.newLineAtOffset(72, 700);
+                stream.showText(text);
+                stream.endText();
+            }
+            document.save(path.toFile());
+        }
+        return path.toFile();
+    }
+
     static java.io.File createPdfWithPages(Path path, int pages) throws IOException {
         try (PDDocument document = new PDDocument()) {
             for (int i = 0; i < pages; i++) {

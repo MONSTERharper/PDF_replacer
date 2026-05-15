@@ -14,16 +14,16 @@ public class ContactService {
 
     private final JavaMailSender mailSender;
 
-    @Value("${pdfreplacer.contact.to-email:sarveshthapa007@gmail.com}")
+    @Value("${boltreplacer.contact.to-email:sarveshthapa007@gmail.com}")
     private String contactEmail;
 
-    @Value("${pdfreplacer.contact.from-email:}")
+    @Value("${boltreplacer.contact.from-email:}")
     private String fromEmail;
 
     @Value("${spring.mail.host:}")
     private String mailHost;
 
-    @Value("${pdfreplacer.contact.log-only:false}")
+    @Value("${boltreplacer.contact.log-only:false}")
     private boolean contactLogOnly;
 
     public ContactService(JavaMailSender mailSender) {

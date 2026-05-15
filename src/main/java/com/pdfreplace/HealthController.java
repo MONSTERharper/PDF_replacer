@@ -14,7 +14,8 @@ public class HealthController {
     public Map<String, Object> health() {
         return Map.of(
                 "status", "ok",
-                "service", "pdfbolt-replace",
+                "suite", "PDFBolt",
+                "tool", "bolt-replace",
                 "timestamp", Instant.now().toString()
         );
     }

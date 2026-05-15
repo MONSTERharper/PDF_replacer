@@ -4,9 +4,10 @@
   <modelVersion>4.0.0</modelVersion>
 
   <groupId>com.pdfreplace</groupId>
-  <artifactId>true-pdf-replacer</artifactId>
+  <artifactId>bolt-replacer</artifactId>
   <version>0.1.0</version>
-  <name>PDF Replacer</name>
+  <name>PDFBolt Suite</name>
+  <description>Hosted PDFBolt tooling; this module provides the bolt-replace PDF text engine and API.</description>
 
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
@@ -79,7 +80,7 @@
         <artifactId>spring-boot-maven-plugin</artifactId>
         <version>${spring.boot.version}</version>
         <configuration>
-          <mainClass>com.pdfreplace.PdfReplacerWebApplication</mainClass>
+          <mainClass>com.pdfreplace.PdfBoltWebApplication</mainClass>
         </configuration>
         <executions>
           <execution>

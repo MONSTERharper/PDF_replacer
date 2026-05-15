@@ -18,18 +18,42 @@ import org.apache.pdfbox.pdmodel.font.PDFont;
 import org.apache.pdfbox.pdmodel.font.PDType0Font;
 import org.apache.pdfbox.pdmodel.font.PDType3Font;
 import org.apache.pdfbox.pdmodel.PDResources;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 public final class DeterministicPdfReplacer {
+    private static final Logger LOGGER = LoggerFactory.getLogger(DeterministicPdfReplacer.class);
+
+    /** Max font files to probe after ranking by similarity (avoids scanning thousands on huge trees). */
+    private static final int MAX_FONT_DISCOVERY_PROBE =
+            Integer.parseInt(System.getProperty("boltreplacer.fontDiscovery.maxProbe", "400"));
+
+    /** Minimum matched-run width delta (points) before applying {@code Tw} repair. */
+    private static final float TW_WIDTH_DIFF_THRESHOLD_PT = 0.5f;
+
+    /** Hard limit on injected {@code Tw} magnitude (glyph-space-ish units PDFBox widths use per 1000 em). */
+    private static final float TW_MAX_COMBINED_MAGNITUDE = 800f;
+
+    /** Optional extra roots via -Dboltreplacer.fontRoots=/extra/a:/extra/b */
+    private static final String EXTRA_FONT_ROOTS_PROP = "boltreplacer.fontRoots";
+
     private DeterministicPdfReplacer() {
     }
 
@@ -563,6 +587,8 @@ public final class DeterministicPdfReplacer {
             return applyRunReconstruction(rewriteRun, matchStart, matchEnd, replacement, substituteFont, preserveStyle);
         }
 
+        String matchedOriginal = matchedSubstring(affected, matchStart, matchEnd);
+
         TextSegment first = affected.get(0);
         int firstLocalStart = Math.max(0, matchStart - first.start);
         int firstLocalEnd = Math.min(first.text.length(), matchEnd - first.start);
@@ -584,14 +610,283 @@ public final class DeterministicPdfReplacer {
         if (!preserveStyle) {
             zeroInternalArraySpacing(affected);
         }
-        StringBuilder originalMatchedText = new StringBuilder();
-        for (TextSegment segment : affected) {
-            originalMatchedText.append(segment.originalText);
+        TextSegment firstAfter = affected.get(0);
+        PDFont drawFont = firstAfter.usesSubstituteFont && substituteFont != null ? substituteFont : firstAfter.font;
+        boolean lengthMismatch = replacement.length() != matchedOriginal.length();
+        boolean widthMismatch = false;
+        if (!lengthMismatch) {
+            float fontSize = firstAfter.fontSize instanceof COSNumber size ? size.floatValue() : 12.0f;
+            try {
+                float wOld = stringWidthUserSpace(matchedOriginal, firstAfter.font, fontSize);
+                float wNew = stringWidthUserSpace(replacement, drawFont, fontSize);
+                widthMismatch = Math.abs(wNew - wOld) > Math.max(0.5f, fontSize * 0.06f);
+            } catch (IOException e) {
+                LOGGER.trace("Width compare skipped: {}", e.getMessage());
+            }
         }
-        if (replacement.length() != originalMatchedText.length()) {
-            shiftFollowingPositionedText(tokens, allSegments, affected, replacement, first.usesSubstituteFont ? substituteFont : first.font);
+
+        if (lengthMismatch || widthMismatch) {
+            boolean appliedTw =
+                    applyTwAdjustment(tokens, firstAfter, matchedOriginal, replacement, firstAfter.font, drawFont);
+            if (!appliedTw && widthMismatch && !lengthMismatch) {
+                injectTransientCharacterSpacingTc(tokens, firstAfter, matchedOriginal, replacement, drawFont);
+            }
+            shiftFollowingPositionedText(tokens, allSegments, affected, replacement, drawFont, matchedOriginal);
         }
         return changed;
+    }
+
+    /** Text content in the PDF matching [matchStart, matchEnd) across affected segments (pre-rewrite ordering). */
+    private static String matchedSubstring(List<TextSegment> affected, int matchStart, int matchEnd) {
+        StringBuilder sb = new StringBuilder();
+        for (TextSegment segment : affected) {
+            if (matchEnd <= segment.start || matchStart >= segment.end) {
+                continue;
+            }
+            int ls = Math.max(0, matchStart - segment.start);
+            int le = Math.min(segment.originalText.length(), matchEnd - segment.start);
+            if (ls < le) {
+                sb.append(segment.originalText, ls, le);
+            }
+        }
+        return sb.toString();
+    }
+
+    private static float stringWidthUserSpace(String text, PDFont font, float fontSize) throws IOException {
+        if (text == null || text.isEmpty()) {
+            return 0f;
+        }
+        try {
+            return font.getStringWidth(text) / 1000.0f * fontSize;
+        } catch (IllegalArgumentException e) {
+            return 0.48f * fontSize * text.length();
+        }
+    }
+
+    /**
+     * Injects {@code tc Tc … Tj … 0 Tc} around a standalone {@code Tj} when substitution width differs
+     * while character count stays the same (cheap layout repair; skipped for TJ/form arrays).
+     */
+    private static void injectTransientCharacterSpacingTc(
+            List<Object> tokens,
+            TextSegment segment,
+            String matchedOriginal,
+            String replacement,
+            PDFont drawFont
+    ) throws IOException {
+        if (segment.parentArray != null || replacement.length() != matchedOriginal.length()) {
+            return;
+        }
+        int op = segment.operatorIndex;
+        if (op < 1 || !(tokens.get(op - 1) instanceof COSString) || !(tokens.get(op) instanceof Operator opTok)) {
+            return;
+        }
+        if (!"Tj".equals(opTok.getName())) {
+            return;
+        }
+
+        float fontSize = segment.fontSize instanceof COSNumber size ? size.floatValue() : 12f;
+        float deltaPt =
+                stringWidthUserSpace(replacement, drawFont, fontSize)
+                        - stringWidthUserSpace(matchedOriginal, segment.font, fontSize);
+        if (Math.abs(deltaPt) < Math.max(0.08f, fontSize * 0.02f)) {
+            return;
+        }
+
+        /*
+         * Tc measured in glyph space (typical widths from getStringWidth are 1/1000 em units);
+         * map user-space deviation back into proportional Tc.
+         */
+        int units = Math.max(1, replacement.codePointCount(0, replacement.length()));
+        float tc = (-deltaPt / fontSize) * (1000f / units);
+
+        int stringOperandIndex = op - 1;
+        tokens.add(stringOperandIndex, Operator.getOperator("Tc"));
+        tokens.add(stringOperandIndex, new org.apache.pdfbox.cos.COSFloat(tc));
+        /* After two inserts original Tj shifted by +2 */
+        int tjIndexAfter = op + 2;
+        int resetInsertion = tjIndexAfter + 1;
+        tokens.add(resetInsertion, Operator.getOperator("Tc"));
+        tokens.add(resetInsertion, new org.apache.pdfbox.cos.COSFloat(0f));
+
+        LOGGER.trace("Injected transient Tc={} for width repair at token index {}", tc, stringOperandIndex);
+    }
+
+    /**
+     * Step 1: Active {@code Tw} operand immediately preceding this {@code Tj}, scanning backwards until {@code BT}.
+     */
+    private static float findActiveTw(List<Object> tokens, int tjOperatorIndex) {
+        if (tjOperatorIndex < 1 || tjOperatorIndex >= tokens.size()) {
+            return 0f;
+        }
+        for (int i = tjOperatorIndex - 1; i >= 0; i--) {
+            Object token = tokens.get(i);
+            if (token instanceof Operator op) {
+                if ("BT".equals(op.getName())) {
+                    return 0f;
+                }
+                if ("Tw".equals(op.getName()) && i >= 1) {
+                    Float w = numericTokenFloat(tokens.get(i - 1));
+                    if (w != null) {
+                        return w;
+                    }
+                }
+            }
+        }
+        return 0f;
+    }
+
+    private static Float numericTokenFloat(Object token) {
+        return token instanceof COSNumber n ? n.floatValue() : null;
+    }
+
+    private static int countAsciiSpaces(String text) {
+        if (text == null || text.isEmpty()) {
+            return 0;
+        }
+        int n = 0;
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) == ' ') {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * Gate 4: Reject TAB/LF/NBSP and other whitespace that is not U+0020 so {@code Tw} semantics stay predictable.
+     */
+    private static boolean hasOnlyAsciiSpaceWhitespace(String replacement) {
+        if (replacement == null) {
+            return true;
+        }
+        int i = 0;
+        while (i < replacement.length()) {
+            int cp = replacement.codePointAt(i);
+            if (Character.isWhitespace(cp) && cp != ' ') {
+                return false;
+            }
+            i += Character.charCount(cp);
+        }
+        return true;
+    }
+
+    /**
+     * Steps 4–5: Decide whether transient {@code Tw} is suitable for this segment and replacement widths.
+     */
+    private static boolean shouldApplyTw(
+            TextSegment segment,
+            String matchedOriginal,
+            String replacement,
+            PDFont matchedFont,
+            PDFont replacementFont,
+            float fontSize
+    ) throws IOException {
+        if (segment.parentArray != null || replacementFont == null) {
+            return false;
+        }
+        if (countAsciiSpaces(replacement) <= 0 || !hasOnlyAsciiSpaceWhitespace(replacement)) {
+            return false;
+        }
+        try {
+            replacementFont.encode(" ");
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+        float wOld = stringWidthUserSpace(matchedOriginal == null ? "" : matchedOriginal, matchedFont, fontSize);
+        float wNew = stringWidthUserSpace(replacement == null ? "" : replacement, replacementFont, fontSize);
+        return Math.abs(wNew - wOld) >= TW_WIDTH_DIFF_THRESHOLD_PT;
+    }
+
+    /**
+     * Step 2: Per-U+0020 adjustment in glyph-width units (~ PDFBox {@code getStringWidth} scale / 1000 em),
+     * to cancel width delta when distributed only across ASCII spaces.
+     */
+    private static float calculateTwAdjustment(
+            String matchedOriginal,
+            String replacement,
+            PDFont matchedFont,
+            PDFont replacementFont,
+            float fontSize,
+            int replacementSpaceCount
+    ) throws IOException {
+        if (replacementSpaceCount <= 0 || fontSize <= 0.01f) {
+            return 0f;
+        }
+        float diffPt =
+                stringWidthUserSpace(replacement, replacementFont, fontSize)
+                        - stringWidthUserSpace(matchedOriginal, matchedFont, fontSize);
+        return (-diffPt / replacementSpaceCount) / fontSize * 1000f;
+    }
+
+    /**
+     * Step 3: {@code [(Tw0+Δ) Tw ( … ) Tj Tw0 Tw]} fencing so following text sees the prior word spacing again.
+     */
+    private static boolean applyTwAdjustment(
+            List<Object> tokens,
+            TextSegment segment,
+            String matchedOriginal,
+            String replacement,
+            PDFont matchedFont,
+            PDFont replacementFont
+    ) throws IOException {
+        if (!shouldApplyTw(segment, matchedOriginal, replacement, matchedFont, replacementFont, estimateFontSizeHint(segment))) {
+            return false;
+        }
+        int stringIndex = resolveStandaloneTjStringTokenIndex(tokens, segment);
+        if (stringIndex < 0 || stringIndex + 1 >= tokens.size()) {
+            return false;
+        }
+        if (!(tokens.get(stringIndex + 1) instanceof Operator op) || !"Tj".equals(op.getName())) {
+            return false;
+        }
+        int tjIndex = stringIndex + 1;
+
+        float fontSize = estimateFontSizeHint(segment);
+        float existingTw = findActiveTw(tokens, tjIndex);
+        int spaces = countAsciiSpaces(replacement);
+        float delta = calculateTwAdjustment(matchedOriginal, replacement, matchedFont, replacementFont, fontSize, spaces);
+        if (Math.abs(delta) < 1e-5f) {
+            return false;
+        }
+        float combined = clampTw(existingTw + delta);
+
+        /* Highest index first: restore pair after {@code Tj} */
+        tokens.add(tjIndex + 1, Operator.getOperator("Tw"));
+        tokens.add(tjIndex + 1, new org.apache.pdfbox.cos.COSFloat(existingTw));
+        tokens.add(stringIndex, Operator.getOperator("Tw"));
+        tokens.add(stringIndex, new org.apache.pdfbox.cos.COSFloat(combined));
+
+        LOGGER.trace(
+                "Injected transient Tw fencing originalTw={}, combinedTw={}, delta={}, spaces={}",
+                existingTw,
+                combined,
+                delta,
+                spaces);
+        return true;
+    }
+
+    private static float clampTw(float tw) {
+        if (tw > TW_MAX_COMBINED_MAGNITUDE) {
+            return TW_MAX_COMBINED_MAGNITUDE;
+        }
+        if (tw < -TW_MAX_COMBINED_MAGNITUDE) {
+            return -TW_MAX_COMBINED_MAGNITUDE;
+        }
+        return tw;
+    }
+
+    private static int resolveStandaloneTjStringTokenIndex(List<Object> tokens, TextSegment segment) {
+        if (tokens == null || segment == null) {
+            return -1;
+        }
+        COSString needle = segment.cosString;
+        for (int i = 0; i < tokens.size() - 1; i++) {
+            if (tokens.get(i) == needle && tokens.get(i + 1) instanceof Operator op && "Tj".equals(op.getName())) {
+                return i;
+            }
+        }
+        return -1;
     }
 
     private static List<TextSegment> findSameBaselineRewriteRun(List<TextSegment> allSegments, List<TextSegment> affected) {
@@ -689,7 +984,8 @@ public final class DeterministicPdfReplacer {
             List<TextSegment> allSegments,
             List<TextSegment> affected,
             String replacement,
-            PDFont replacementFont
+            PDFont replacementFont,
+            String matchedOriginal
     ) throws IOException {
         if (affected.isEmpty() || affected.get(0).parentArray != null) {
             return;
@@ -703,7 +999,7 @@ public final class DeterministicPdfReplacer {
         }
 
         TextSegment next = allSegments.get(lastIndex + 1);
-        float delta = estimateReplacementDelta(tokens, affected, replacement, replacementFont);
+        float delta = estimateReplacementDelta(tokens, affected, replacement, replacementFont, matchedOriginal);
         if (Math.abs(delta) < 0.001f) {
             return;
         }
@@ -719,12 +1015,13 @@ public final class DeterministicPdfReplacer {
             List<Object> tokens,
             List<TextSegment> affected,
             String replacement,
-            PDFont replacementFont
+            PDFont replacementFont,
+            String matchedOriginal
     ) throws IOException {
         TextSegment first = affected.get(0);
-        float originalWidth = 0;
+        float laidOutWidth = 0;
         for (int i = 1; i < affected.size(); i++) {
-            originalWidth += precedingTdX(tokens, affected.get(i));
+            laidOutWidth += precedingTdX(tokens, affected.get(i));
         }
 
         int afterLastOperator = affected.get(affected.size() - 1).operatorIndex;
@@ -734,28 +1031,52 @@ public final class DeterministicPdfReplacer {
                 && tokens.get(afterLastOperator + 1) instanceof COSNumber dy
                 && Math.abs(dy.floatValue()) < 0.001f
                 && tokens.get(afterLastOperator + 1 - 1) instanceof COSNumber dx) {
-            originalWidth += dx.floatValue();
+            laidOutWidth += dx.floatValue();
         }
 
-        if (originalWidth <= 0) {
+        StringBuilder contiguousOriginal = new StringBuilder();
+        for (TextSegment segment : affected) {
+            contiguousOriginal.append(segment.originalText);
+        }
+        String contiguous = contiguousOriginal.toString();
+
+        String match = matchedOriginal != null ? matchedOriginal : contiguous;
+        if (match.isEmpty() && contiguous.isEmpty()) {
             return 0;
         }
 
-        StringBuilder originalText = new StringBuilder();
-        for (TextSegment segment : affected) {
-            originalText.append(segment.originalText);
+        float denom;
+        try {
+            denom = Math.max(1f, first.font.getStringWidth(contiguous));
+        } catch (IllegalArgumentException ex) {
+            denom = Math.max(1f, 550f * Math.max(1, contiguous.codePointCount(0, contiguous.length())));
         }
 
-        float originalFontWidth = Math.max(1, first.font.getStringWidth(originalText.toString()));
-        float scale = originalWidth / originalFontWidth;
-        try {
-            float replacementWidth = replacementFont.getStringWidth(replacement) * scale;
-            return replacementWidth - originalWidth;
-        } catch (IllegalArgumentException e) {
-            float averageOriginalCharWidth = originalWidth / Math.max(1, originalText.length());
-            float replacementWidth = averageOriginalCharWidth * replacement.length();
-            return replacementWidth - originalWidth;
+        float glyphScale;
+        float fontSize = estimateFontSizeHint(first);
+        if (laidOutWidth > 0f) {
+            glyphScale = laidOutWidth / denom;
+        } else {
+            /* No measured Tj gaps: map PDFBox widths (text units × 1000) into user offsets via fontSize */
+            glyphScale = fontSize / 1000f;
         }
+
+        try {
+            float oldMatch = first.font.getStringWidth(match) * glyphScale;
+            float newMatch = replacementFont.getStringWidth(replacement) * glyphScale;
+            return newMatch - oldMatch;
+        } catch (IllegalArgumentException e) {
+            if (laidOutWidth > 0f) {
+                int cl = Math.max(1, contiguous.length());
+                float share = laidOutWidth / cl;
+                return share * (replacement.length() - match.length());
+            }
+            return 0.48f * fontSize * (replacement.length() - match.length());
+        }
+    }
+
+    private static float estimateFontSizeHint(TextSegment segment) {
+        return segment.fontSize instanceof COSNumber n ? Math.max(0.1f, n.floatValue()) : 12f;
     }
 
     private static float precedingTdX(List<Object> tokens, TextSegment segment) {
@@ -844,6 +1165,11 @@ public final class DeterministicPdfReplacer {
     }
 
     private static PDFont chooseEncodingFont(PDFont originalFont, String text, PDFont substituteFont, boolean preserveStyle) throws IOException {
+        /* Subset fonts are unsafe for arbitrary replacement strings — prefer substitute when present. */
+        if (substituteFont != null && isSubsetFont(originalFont)) {
+            substituteFont.encode(text);
+            return substituteFont;
+        }
         try {
             originalFont.encode(text);
             return originalFont;
@@ -882,6 +1208,25 @@ public final class DeterministicPdfReplacer {
         if (segment.font instanceof PDType3Font) {
             throw new IOException("Type3 fonts are not supported by this baseline replacer");
         }
+        if (substituteFont != null && isSubsetFont(segment.font)) {
+            try {
+                segment.cosString.setValue(substituteFont.encode(newText));
+                segment.usesSubstituteFont = true;
+                if (preserveStyle && !isStyleCompatible(segment.font, substituteFont)) {
+                    segment.styleApproximationUsed = true;
+                }
+                segment.text = newText;
+                segment.changed = true;
+                LOGGER.debug(
+                        "Rewrote subset font segment using substitute; pdfFont={}, substitute={}",
+                        safeFontName(segment.font),
+                        safeFontName(substituteFont));
+                return;
+            } catch (IllegalArgumentException e) {
+                throw new IOException("Subset font '" + safeFontName(segment.font) + "' requires a substitute, but substitution text cannot be encoded. "
+                        + "Preview: [" + previewText(newText) + "]. Ensure server fonts cover these characters.", e);
+            }
+        }
         try {
             segment.cosString.setValue(segment.font.encode(newText));
             segment.usesSubstituteFont = false;
@@ -889,10 +1234,13 @@ public final class DeterministicPdfReplacer {
             String originalFontName = safeFontName(segment.font);
             String preview = previewText(newText);
             if (substituteFont == null) {
-                throw new IOException("Replacement text cannot be encoded with the original embedded font '" + originalFontName + "'. "
-                        + "Failed text preview: [" + preview + "]. "
-                        + "The PDF likely uses a subset font that does not contain one or more replacement glyphs. "
-                        + "Try replacement text using characters already present in the PDF, or pass --font /path/to/font.ttf.", e);
+                String subsetHint =
+                        isSubsetFont(segment.font)
+                                ? " Embedded font is subset (likely missing glyphs for new text)."
+                                : " Embedded font encoding failed.";
+                throw new IOException("Replacement text cannot be encoded with the original font '" + originalFontName + "'." + subsetHint
+                        + " Failed text preview: [" + preview + "]. "
+                        + "Try characters already embedded in this PDF or install Unicode fonts on the server.", e);
             }
             try {
                 segment.cosString.setValue(substituteFont.encode(newText));
@@ -904,7 +1252,7 @@ public final class DeterministicPdfReplacer {
                 throw new IOException("Replacement text cannot be encoded with original font '" + originalFontName + "' "
                         + "or fallback font '" + safeFontName(substituteFont) + "'. "
                         + "Failed text preview: [" + preview + "]. "
-                        + "Add a broader fallback font such as Noto Sans to the server.", fallbackError);
+                        + "Install a font with the required glyphs on the server (see logs for missing candidate paths).", fallbackError);
             }
         }
         segment.text = newText;
@@ -954,28 +1302,44 @@ public final class DeterministicPdfReplacer {
     private static boolean isStyleCompatible(PDFont originalFont, PDFont fallbackFont) {
         FontStyle original = detectStyle(safeFontName(originalFont));
         FontStyle fallback = detectStyle(safeFontName(fallbackFont));
-        return (!original.bold || fallback.bold) && (!original.italic || fallback.italic);
+        return (!original.effectiveBold() || fallback.effectiveBold())
+                && (!original.italic() || fallback.italic());
     }
 
     private static FontStyle detectStyle(String fontName) {
         String value = fontName == null ? "" : fontName.toLowerCase(Locale.ROOT);
-        boolean bold = value.contains("bold") || value.contains("black") || value.contains("demi");
         boolean italic = value.contains("italic") || value.contains("oblique");
-        return new FontStyle(bold, italic);
+        boolean bold =
+                value.contains("bold")
+                        || value.contains("black")
+                        || value.contains("heavy")
+                        || value.contains("demi")
+                        || value.contains("semibold")
+                        || value.contains("semi-bold")
+                        || value.contains("demibold")
+                        || value.contains("extrabold")
+                        || value.contains("ultrabold")
+                        || value.contains("fat");
+        boolean light = value.contains("light") || value.contains("thin") || value.contains("hairline");
+        return new FontStyle(bold && !light, italic, light);
     }
 
     private static PDType0Font loadSubstituteFont(
             PDDocument document,
-            File requestedFontFile,
+            File cliFontFile,
             String replacement
     ) throws IOException {
-        boolean debugFonts = Boolean.parseBoolean(System.getProperty("pdfreplacer.debugFonts", "false"));
+        Set<String> missingLogged = new HashSet<>();
         List<File> candidates = new ArrayList<>();
-        if (requestedFontFile != null) {
-            candidates.add(requestedFontFile);
+        if (cliFontFile != null) {
+            if (!cliFontFile.isFile()) {
+                LOGGER.warn("CLI substitute font path not found or not a file: {}", cliFontFile.getAbsolutePath());
+            } else {
+                candidates.add(cliFontFile);
+            }
         }
 
-        // Linux paths (confirmed available in Docker)
+        // Linux paths (typical Docker/Ubuntu packages)
         candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"));
         candidates.add(new File("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"));
@@ -989,34 +1353,25 @@ public final class DeterministicPdfReplacer {
         candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
 
         for (File candidate : candidates) {
-            boolean exists = candidate.isFile();
-            if (debugFonts) {
-                System.out.println("DEBUG: Trying font: " + candidate.getAbsolutePath() + " exists=" + exists);
-            }
-            if (!exists) {
-                continue;
-            }
-            try {
-                PDType0Font font = PDType0Font.load(document, candidate);
-                font.encode(replacement);
-                if (debugFonts) {
-                    System.out.println("DEBUG: Successfully loaded font: " + candidate.getAbsolutePath());
-                }
-                return font;
-            } catch (IOException | IllegalArgumentException e) {
-                if (debugFonts) {
-                    System.out.println("DEBUG: Failed font: " + candidate.getAbsolutePath() + " reason: " + e.getMessage());
-                }
-                // Try the next fallback font.
+            PDType0Font loaded = tryLoadEncodedSubstitute(document, candidate, replacement, missingLogged);
+            if (loaded != null) {
+                LOGGER.debug("Using curated substitute font: {}", candidate.getAbsolutePath());
+                return loaded;
             }
         }
 
-        if (debugFonts) {
-            System.out.println("DEBUG: No substitute font found!");
+        PDType0Font discovered = discoverSubstituteFont(document, replacement, null);
+        if (discovered != null) {
+            return discovered;
         }
+
+        LOGGER.warn("No substitute font could encode the replacement text after curated paths and similarity discovery.");
         return null;
     }
 
+    /**
+     * Curated bold/italic/Roman candidates, then similarity-ranked scan of installed fonts.
+     */
     private static PDType0Font loadStyleCompatibleSubstituteFont(
             PDDocument document,
             String replacement,
@@ -1024,7 +1379,15 @@ public final class DeterministicPdfReplacer {
     ) throws IOException {
         FontStyle style = detectStyle(safeFontName(originalFont));
         List<File> candidates = new ArrayList<>();
-        if (style.bold && style.italic) {
+
+        LinkedHashSet<String> seenAbsolute = new LinkedHashSet<>();
+        for (String pathStr : FontSimilarityMap.getCandidatePaths(safeFontName(originalFont))) {
+            if (seenAbsolute.add(pathStr)) {
+                candidates.add(new File(pathStr));
+            }
+        }
+
+        if (style.effectiveBold() && style.italic()) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-BoldItalic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansBoldOblique.ttf"));
@@ -1033,7 +1396,7 @@ public final class DeterministicPdfReplacer {
             candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-ExtraBoldItalic.ttf"));
             candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold Italic.ttf"));
         }
-        if (style.bold) {
+        if (style.effectiveBold()) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansBold.ttf"));
@@ -1042,7 +1405,7 @@ public final class DeterministicPdfReplacer {
             candidates.add(new File("/usr/share/fonts/truetype/open-sans/OpenSans-ExtraBold.ttf"));
             candidates.add(new File("/System/Library/Fonts/Supplemental/Arial Bold.ttf"));
         }
-        if (style.italic) {
+        if (style.italic()) {
             candidates.add(new File("/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/noto/NotoSans-Italic.ttf"));
             candidates.add(new File("/usr/share/fonts/truetype/freefont/FreeSansOblique.ttf"));
@@ -1059,18 +1422,215 @@ public final class DeterministicPdfReplacer {
         candidates.add(new File("fonts/NotoSans-Regular.ttf"));
         candidates.add(new File("src/main/resources/fonts/NotoSans-Regular.ttf"));
 
+        Set<String> missingLogged = new HashSet<>();
         for (File candidate : candidates) {
-            if (!candidate.isFile()) {
-                continue;
-            }
-            try {
-                PDType0Font font = PDType0Font.load(document, candidate);
-                font.encode(replacement);
-                return font;
-            } catch (IOException | IllegalArgumentException ignored) {
-                // Try next style candidate.
+            PDType0Font loaded = tryLoadEncodedSubstitute(document, candidate, replacement, missingLogged);
+            if (loaded != null) {
+                LOGGER.debug("Using style-aware curated substitute font: {}", candidate.getAbsolutePath());
+                return loaded;
             }
         }
+
+        return discoverSubstituteFont(document, replacement, originalFont);
+    }
+
+    private static void logMissingFontCandidate(File candidate, Set<String> missingLogged) {
+        String path = candidate.getAbsolutePath();
+        if (missingLogged.add(path)) {
+            LOGGER.info("Substitute font candidate not found on disk (install package or add file if needed): {}", path);
+        }
+    }
+
+    private static PDType0Font tryLoadEncodedSubstitute(
+            PDDocument document,
+            File candidate,
+            String replacement,
+            Set<String> missingLogged
+    ) {
+        if (!candidate.isFile()) {
+            logMissingFontCandidate(candidate, missingLogged);
+            return null;
+        }
+        try {
+            PDType0Font font = PDType0Font.load(document, candidate);
+            font.encode(replacement);
+            return font;
+        } catch (IOException | IllegalArgumentException e) {
+            LOGGER.debug("Substitute font cannot encode replacement, skipping {}: {}", candidate.getAbsolutePath(), e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Heuristic similarity between embedded PDF font name and an on-disk font filename (tokens + bold/italic).
+     * Higher is better.
+     */
+    static double substituteSimilarityScore(PDFont referenceFont, Path fontPath) {
+        if (referenceFont == null || fontPath == null) {
+            return 0.0;
+        }
+        String refLabel = FontSimilarityMap.normalizedFontKey(safeFontName(referenceFont));
+        String fileLabel = FontSimilarityMap.normalizedFontKey(
+                fontPath.getFileName().toString().replaceFirst("(?i)\\.(ttf|otf)$", ""));
+        if (refLabel.isBlank() || fileLabel.isBlank()) {
+            return 0.0;
+        }
+        FontStyle refStyle = detectStyle(refLabel);
+        FontStyle pathStyle = detectStyle(fileLabel);
+        double jaccard = tokenJaccard(refLabel, fileLabel);
+        double score = jaccard;
+        // Style alignment with PDF font metadata
+        if (refStyle.effectiveBold() == pathStyle.effectiveBold()) {
+            score += 0.12;
+        } else if (refStyle.effectiveBold() && !pathStyle.effectiveBold()) {
+            score -= 0.08;
+        }
+        if (refStyle.italic() == pathStyle.italic()) {
+            score += 0.12;
+        } else if (refStyle.italic() && !pathStyle.italic()) {
+            score -= 0.08;
+        }
+        return score;
+    }
+
+    private static double tokenJaccard(String a, String b) {
+        Set<String> ta = splitFontTokens(a);
+        Set<String> tb = splitFontTokens(b);
+        if (ta.isEmpty() || tb.isEmpty()) {
+            return 0.0;
+        }
+        Set<String> inter = ta.stream().filter(tb::contains).collect(Collectors.toSet());
+        Set<String> union = new HashSet<>(ta);
+        union.addAll(tb);
+        return union.isEmpty() ? 0.0 : (double) inter.size() / (double) union.size();
+    }
+
+    private static Set<String> splitFontTokens(String raw) {
+        String[] parts = raw.toLowerCase(Locale.ROOT).split("[^a-z0-9]+");
+        Set<String> out = new HashSet<>();
+        for (String p : parts) {
+            if (p.length() >= 2) {
+                out.add(p);
+            }
+        }
+        return out;
+    }
+
+    private static List<Path> listInstallableFontPaths() {
+        List<Path> roots = defaultFontRoots();
+        String extra = System.getProperty(EXTRA_FONT_ROOTS_PROP, "");
+        if (extra != null && !extra.isBlank()) {
+            for (String part : extra.split(java.io.File.pathSeparator)) {
+                if (part != null && !part.isBlank()) {
+                    roots.add(Path.of(part.trim()));
+                }
+            }
+        }
+        List<Path> fonts = new ArrayList<>();
+        for (Path root : roots) {
+            if (!Files.isDirectory(root)) {
+                LOGGER.trace("Font scan root missing or not a directory: {}", root.toAbsolutePath());
+                continue;
+            }
+            try (Stream<Path> walk = Files.walk(root, 6)) {
+                walk.filter(p -> Files.isRegularFile(p) && isFontExtension(p)).forEach(fonts::add);
+            } catch (IOException e) {
+                LOGGER.debug("Unable to scan font directory {}: {}", root.toAbsolutePath(), e.getMessage());
+            }
+        }
+        fonts.sort(Comparator.comparing(Path::toString));
+        return fonts;
+    }
+
+    private static List<Path> defaultFontRoots() {
+        List<Path> list = new ArrayList<>();
+        list.add(Path.of("/usr/share/fonts"));
+        list.add(Path.of("/usr/local/share/fonts"));
+        list.add(Path.of("fonts"));
+        list.add(Path.of("src/main/resources/fonts"));
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("windows")) {
+            String windir = System.getenv("WINDIR");
+            if (windir != null && !windir.isBlank()) {
+                list.add(Path.of(windir, "Fonts"));
+            }
+        }
+        if (os.contains("mac")) {
+            list.add(Path.of("/System/Library/Fonts/Supplemental"));
+            list.add(Path.of("/Library/Fonts"));
+        }
+        return list;
+    }
+
+    private static boolean isFontExtension(Path p) {
+        String n = p.getFileName().toString().toLowerCase(Locale.ROOT);
+        return n.endsWith(".ttf") || n.endsWith(".otf");
+    }
+
+    /**
+     * After curated candidates fail, try installed fonts ranked by similarity to {@code referenceFont}
+     * (or lexicographic order when referenceFont is null).
+     */
+    private static PDType0Font discoverSubstituteFont(
+            PDDocument document,
+            String replacement,
+            PDFont referenceFont
+    ) throws IOException {
+        List<Path> all = listInstallableFontPaths();
+        if (all.isEmpty()) {
+            LOGGER.warn("substitute-discovery: No .ttf/.otf files found under scan roots — add fonts under /usr/share/fonts or {}",
+                    EXTRA_FONT_ROOTS_PROP);
+            return null;
+        }
+
+        record Scored(Path path, double score) {
+        }
+
+        Comparator<Scored> order = Comparator.<Scored>comparingDouble(Scored::score).reversed()
+                .thenComparing(s -> s.path.toString());
+
+        List<Scored> ranked = all.stream()
+                .map(path -> new Scored(path, substituteSimilarityScore(referenceFont, path)))
+                .sorted(order)
+                .toList();
+
+        int attempts = 0;
+        boolean verboseRank = LOGGER.isDebugEnabled();
+
+        for (Scored scored : ranked) {
+            if (attempts >= MAX_FONT_DISCOVERY_PROBE) {
+                break;
+            }
+            attempts++;
+            if (verboseRank && attempts <= 5 && referenceFont != null) {
+                LOGGER.debug(
+                        "discovery rank sample #{} score={} path={}",
+                        attempts,
+                        String.format(Locale.ROOT, "%.4f", scored.score),
+                        scored.path);
+            }
+            try {
+                File file = scored.path.toFile();
+                PDType0Font font = PDType0Font.load(document, file);
+                font.encode(replacement);
+                LOGGER.info(
+                        "Using discovery-selected substitute font path={} similarityScore={} referenceFont={}",
+                        scored.path.toAbsolutePath(),
+                        String.format(Locale.ROOT, "%.4f", scored.score),
+                        referenceFont == null ? "(none)" : safeFontName(referenceFont));
+                return font;
+            } catch (IOException | IllegalArgumentException e) {
+                if (LOGGER.isTraceEnabled()) {
+                    LOGGER.trace("discovery skip {}: {}", scored.path, e.getMessage());
+                }
+            }
+        }
+
+        LOGGER.warn(
+                "substitute-discovery: No font could encode the replacement text after probing {} of {} scanned files{}",
+                Math.min(MAX_FONT_DISCOVERY_PROBE, ranked.size()),
+                ranked.size(),
+                referenceFont == null ? "" : " (reference font: " + safeFontName(referenceFont) + ")");
         return null;
     }
 
@@ -1169,7 +1729,31 @@ public final class DeterministicPdfReplacer {
     private record FontState(PDFont font, COSName fontResourceName, COSBase fontSize) {
     }
 
-    private record FontStyle(boolean bold, boolean italic) {
+    private record FontStyle(boolean bold, boolean italic, boolean light) {
+        boolean effectiveBold() {
+            return bold && !light;
+        }
+    }
+
+    /**
+     * True when PDF font name uses a subset tag (typically 6 alphanumeric chars + '+' per PDF conventions).
+     * Subset embeddings often omit glyphs not used in the source document; substitutions should bypass them.
+     */
+    private static boolean isSubsetFont(PDFont font) {
+        String name = font != null ? font.getName() : null;
+        if (name == null || name.length() < 8) {
+            return false;
+        }
+        if (name.charAt(6) != '+') {
+            return false;
+        }
+        for (int i = 0; i < 6; i++) {
+            char c = name.charAt(i);
+            if (!(Character.isUpperCase(c) || (c >= '0' && c <= '9'))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static final class TextSegment {

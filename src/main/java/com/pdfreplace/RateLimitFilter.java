@@ -20,7 +20,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class RateLimitFilter extends OncePerRequestFilter {
     private final Map<String, WindowCounter> counters = new ConcurrentHashMap<>();
 
-    @Value("${pdfreplacer.rate-limit.requests-per-minute:60}")
+    @Value("${boltreplacer.rate-limit.requests-per-minute:60}")
     private int requestsPerMinute;
 
     @Override

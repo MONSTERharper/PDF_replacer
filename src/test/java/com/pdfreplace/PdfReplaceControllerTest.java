@@ -21,9 +21,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "pdfreplacer.limits.max-pages=1",
-        "pdfreplacer.limits.max-search-length=20",
-        "pdfreplacer.limits.max-replacement-length=20"
+        "boltreplacer.limits.max-pages=1",
+        "boltreplacer.limits.max-search-length=20",
+        "boltreplacer.limits.max-replacement-length=20"
 })
 class PdfReplaceControllerTest {
     @Autowired
@@ -113,10 +113,10 @@ class PdfReplaceControllerTest {
                         .param("matchMode", "caseInsensitive")
                         .param("replaceScope", "first"))
                 .andExpect(status().isOk())
-                .andExpect(header().exists("X-Pdf-Replacer-Matches"))
-                .andExpect(header().exists("X-Pdf-Replacer-Matches-Found"))
-                .andExpect(header().exists("X-Pdf-Replacer-Style-Preserved"))
-                .andExpect(header().exists("X-Pdf-Replacer-Style-Fallback"))
+                .andExpect(header().exists("X-Bolt-Replacer-Matches"))
+                .andExpect(header().exists("X-Bolt-Replacer-Matches-Found"))
+                .andExpect(header().exists("X-Bolt-Replacer-Style-Preserved"))
+                .andExpect(header().exists("X-Bolt-Replacer-Style-Fallback"))
                 .andExpect(content().contentType(MediaType.APPLICATION_PDF));
     }
 }

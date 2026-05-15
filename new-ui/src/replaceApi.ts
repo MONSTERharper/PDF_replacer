@@ -75,10 +75,10 @@ export async function postReplaceBatch(params: {
   return {
     filename: parseFilename(disposition),
     blob,
-    matches: response.headers.get('X-Pdf-Replacer-Matches') || '0',
-    matchesFound: response.headers.get('X-Pdf-Replacer-Matches-Found') || '0',
-    stylePreserved: response.headers.get('X-Pdf-Replacer-Style-Preserved') || '0',
-    styleFallback: response.headers.get('X-Pdf-Replacer-Style-Fallback') || '0',
+    matches: response.headers.get('X-Bolt-Replacer-Matches') || '0',
+    matchesFound: response.headers.get('X-Bolt-Replacer-Matches-Found') || '0',
+    stylePreserved: response.headers.get('X-Bolt-Replacer-Style-Preserved') || '0',
+    styleFallback: response.headers.get('X-Bolt-Replacer-Style-Fallback') || '0',
   };
 }
 

@@ -1,5 +1,5 @@
 services:
-  pdfreplacer:
+  boltreplacer:
     build: .
     ports:
       - "${PORT:-8080}:8080"

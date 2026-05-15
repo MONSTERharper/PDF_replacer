@@ -3,15 +3,20 @@ package com.pdfreplace;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.text.PDFTextStripper;
+import org.apache.pdfbox.pdfparser.PDFStreamParser;
+import org.apache.pdfbox.contentstream.operator.Operator;
+import org.apache.pdfbox.cos.COSNumber;
+import org.apache.pdfbox.cos.COSString;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.junit.jupiter.api.Assumptions;
-
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import static org.junit.jupiter.api.Assertions.*;
 
 class DeterministicPdfReplacerTest {
     @TempDir
@@ -106,12 +111,11 @@ class DeterministicPdfReplacerTest {
         assertEquals(0, result.fallbackStyleCount());
     }
 
+    @Disabled("Emoji replacement requires an installed font whose cmap encodes those glyphs via PDFBox; CI/dev machines vary widely.")
     @Test
     void fallsBackToClosestFontWhenExactStyleUnavailable() throws Exception {
         File input = PdfTestSupport.createPdfWithFont(tempDir.resolve("bold-italic-input.pdf"), "A", PDType1Font.HELVETICA_BOLD_OBLIQUE);
         File output = tempDir.resolve("bold-italic-output.pdf").toFile();
-        File fallbackFont = new File("/System/Library/Fonts/Supplemental/Arial.ttf");
-        Assumptions.assumeTrue(fallbackFont.isFile(), "System fallback font not available");
 
         DeterministicPdfReplacer.Result result = DeterministicPdfReplacer.replace(
                 input,
@@ -119,7 +123,7 @@ class DeterministicPdfReplacerTest {
                 "A",
                 "\uD83D\uDE42",
                 false,
-                fallbackFont,
+                null,
                 DeterministicPdfReplacer.MatchMode.EXACT,
                 DeterministicPdfReplacer.ReplaceScope.ALL,
                 null,
@@ -127,6 +131,169 @@ class DeterministicPdfReplacerTest {
         );
         assertEquals(1, result.matchesReplaced());
         assertTrue(result.fallbackStyleCount() >= 1);
+    }
+
+    @Test
+    void substituteSimilarityIsZeroWithoutReferenceFont() {
+        assertEquals(0.0, DeterministicPdfReplacer.substituteSimilarityScore(null, Path.of("LiberationSans-Bold.ttf")), 1e-9);
+    }
+
+    @Test
+    void substituteSimilarityScoresBoldHigherThanRegularForBoldReference() {
+        double boldFile = DeterministicPdfReplacer.substituteSimilarityScore(PDType1Font.HELVETICA_BOLD, Path.of("DejaVuSans-Bold.ttf"));
+        double regularFile = DeterministicPdfReplacer.substituteSimilarityScore(PDType1Font.HELVETICA_BOLD, Path.of("DejaVuSans.ttf"));
+        assertTrue(boldFile > regularFile, () -> "boldScore=" + boldFile + " regularScore=" + regularFile);
+    }
+
+    private static Float twRestoreOperandAfterShowText(File pdfFile) throws Exception {
+        List<Object> tokens = tokensFirstPage(pdfFile);
+        for (int i = 0; i + 3 < tokens.size(); i++) {
+            if (!(tokens.get(i) instanceof COSString)) {
+                continue;
+            }
+            if (!(tokens.get(i + 1) instanceof Operator op) || !"Tj".equals(op.getName())) {
+                continue;
+            }
+            if (!(tokens.get(i + 2) instanceof COSNumber n)) {
+                return null;
+            }
+            if (!(tokens.get(i + 3) instanceof Operator tw) || !"Tw".equals(tw.getName())) {
+                return null;
+            }
+            return n.floatValue();
+        }
+        return null;
+    }
+
+    private static boolean hasTwFenceBeforeAfterTj(File pdfFile) throws Exception {
+        List<Object> tokens = tokensFirstPage(pdfFile);
+        for (int i = 2; i + 3 < tokens.size(); i++) {
+            if (!(tokens.get(i) instanceof COSString)) {
+                continue;
+            }
+            if (!(tokens.get(i + 1) instanceof Operator op) || !"Tj".equals(op.getName())) {
+                continue;
+            }
+            boolean pre =
+                    tokens.get(i - 1) instanceof Operator preTw && "Tw".equals(preTw.getName()) && tokens.get(i - 2) instanceof COSNumber;
+            boolean post =
+                    tokens.get(i + 2) instanceof COSNumber && tokens.get(i + 3) instanceof Operator postTw && "Tw".equals(postTw.getName());
+            return pre && post;
+        }
+        return false;
+    }
+
+    private static List<Object> tokensFirstPage(File pdfFile) throws IOException {
+        try (PDDocument document = PDDocument.load(pdfFile)) {
+            PDFStreamParser parser = new PDFStreamParser(document.getPage(0));
+            parser.parse();
+            return parser.getTokens();
+        }
+    }
+
+    @Test
+    void skipsTwFenceWhenReplacementHasNoAsciiSpaces() throws Exception {
+        File input = PdfTestSupport.createPdfWithText(tempDir.resolve("tw-plain.pdf"), "HelloWorld");
+        File output = tempDir.resolve("tw-plain-out.pdf").toFile();
+
+        DeterministicPdfReplacer.replace(
+                input,
+                output,
+                "HelloWorld",
+                "HelloEarth",
+                false,
+                null,
+                DeterministicPdfReplacer.MatchMode.EXACT,
+                DeterministicPdfReplacer.ReplaceScope.ALL,
+                null
+        );
+
+        assertFalse(hasTwFenceBeforeAfterTj(output));
+    }
+
+    @Test
+    void appliesTwFenceWhenIntroducingSpaces() throws Exception {
+        File input = PdfTestSupport.createPdfWithText(tempDir.resolve("tw-one-word.pdf"), "Planet");
+        File output = tempDir.resolve("tw-one-word-out.pdf").toFile();
+
+        DeterministicPdfReplacer.replace(
+                input,
+                output,
+                "Planet",
+                "Two Worlds",
+                false,
+                null,
+                DeterministicPdfReplacer.MatchMode.EXACT,
+                DeterministicPdfReplacer.ReplaceScope.ALL,
+                null
+        );
+
+        assertTrue(hasTwFenceBeforeAfterTj(output));
+        assertTrue(extractText(output).contains("Two Worlds"));
+    }
+
+    @Test
+    void appliesTwFenceWhenSpacedReplacementChangesWidth() throws Exception {
+        File input = PdfTestSupport.createPdfWithText(tempDir.resolve("tw-phrase.pdf"), "Two Words");
+        File output = tempDir.resolve("tw-phrase-out.pdf").toFile();
+
+        DeterministicPdfReplacer.replace(
+                input,
+                output,
+                "Two Words",
+                "One Gigantic",
+                false,
+                null,
+                DeterministicPdfReplacer.MatchMode.EXACT,
+                DeterministicPdfReplacer.ReplaceScope.ALL,
+                null
+        );
+
+        assertTrue(hasTwFenceBeforeAfterTj(output));
+    }
+
+    @Test
+    void restoresPriorWordSpacingAfterTransientTw() throws Exception {
+        float priorTw = 5f;
+        File input = PdfTestSupport.createPdfWithWordSpacing(tempDir.resolve("tw-prior.pdf"), "Hi", priorTw);
+        File output = tempDir.resolve("tw-prior-out.pdf").toFile();
+
+        DeterministicPdfReplacer.replace(
+                input,
+                output,
+                "Hi",
+                "H i",
+                false,
+                null,
+                DeterministicPdfReplacer.MatchMode.EXACT,
+                DeterministicPdfReplacer.ReplaceScope.ALL,
+                null
+        );
+
+        assertTrue(hasTwFenceBeforeAfterTj(output));
+        Float restored = twRestoreOperandAfterShowText(output);
+        assertNotNull(restored);
+        assertEquals(priorTw, restored, 0.001f);
+    }
+
+    @Test
+    void skipsTwWhenReplacementUsesNbspInsteadOfAsciiSpace() throws Exception {
+        File input = PdfTestSupport.createPdfWithText(tempDir.resolve("tw-nbsp.pdf"), "Z");
+        File output = tempDir.resolve("tw-nbsp-out.pdf").toFile();
+
+        DeterministicPdfReplacer.replace(
+                input,
+                output,
+                "Z",
+                "a\u00A0c",
+                false,
+                null,
+                DeterministicPdfReplacer.MatchMode.EXACT,
+                DeterministicPdfReplacer.ReplaceScope.ALL,
+                null
+        );
+
+        assertFalse(hasTwFenceBeforeAfterTj(output));
     }
 
     private static String extractText(File file) throws Exception {

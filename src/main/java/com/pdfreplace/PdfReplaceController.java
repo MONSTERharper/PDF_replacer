@@ -33,8 +33,7 @@ public class PdfReplaceController {
             @RequestParam(value = "replaceScope", defaultValue = "all") String replaceScope,
             @RequestParam(value = "occurrenceIndex", required = false) Integer occurrenceIndex,
             @RequestParam(value = "preserveStyle", defaultValue = "true") boolean preserveStyle,
-            @RequestParam(value = "retainMetadata", defaultValue = "true") boolean retainMetadata,
-            @RequestParam(value = "font", required = false) MultipartFile font
+            @RequestParam(value = "retainMetadata", defaultValue = "true") boolean retainMetadata
     ) throws Exception {
         PdfReplaceService.BatchReplacementOutput output = service.replaceBatch(
                 mergeFiles(file, files),
@@ -45,17 +44,16 @@ public class PdfReplaceController {
                 replaceScope,
                 occurrenceIndex,
                 preserveStyle,
-                retainMetadata,
-                font
+                retainMetadata
         );
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType(output.contentType()))
                 .contentLength(output.bytes().length)
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment().filename(output.filename()).build().toString())
-                .header("X-Pdf-Replacer-Matches", String.valueOf(output.summary().matchesReplaced()))
-                .header("X-Pdf-Replacer-Matches-Found", String.valueOf(output.summary().matchesFound()))
-                .header("X-Pdf-Replacer-Style-Preserved", String.valueOf(output.summary().stylePreservedCount()))
-                .header("X-Pdf-Replacer-Style-Fallback", String.valueOf(output.summary().fallbackStyleCount()))
+                .header("X-Bolt-Replacer-Matches", String.valueOf(output.summary().matchesReplaced()))
+                .header("X-Bolt-Replacer-Matches-Found", String.valueOf(output.summary().matchesFound()))
+                .header("X-Bolt-Replacer-Style-Preserved", String.valueOf(output.summary().stylePreservedCount()))
+                .header("X-Bolt-Replacer-Style-Fallback", String.valueOf(output.summary().fallbackStyleCount()))
                 .body(new ByteArrayResource(output.bytes()));
     }
 

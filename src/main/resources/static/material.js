@@ -164,10 +164,10 @@ form.addEventListener("submit", async (event) => {
     link.remove();
     URL.revokeObjectURL(url);
 
-    const matches = response.headers.get("X-Pdf-Replacer-Matches");
-    const found = response.headers.get("X-Pdf-Replacer-Matches-Found");
-    const preserved = response.headers.get("X-Pdf-Replacer-Style-Preserved");
-    const fallback = response.headers.get("X-Pdf-Replacer-Style-Fallback");
+    const matches = response.headers.get("X-Bolt-Replacer-Matches");
+    const found = response.headers.get("X-Bolt-Replacer-Matches-Found");
+    const preserved = response.headers.get("X-Bolt-Replacer-Style-Preserved");
+    const fallback = response.headers.get("X-Bolt-Replacer-Style-Fallback");
     statusEl.textContent = `Done. ${matches || "0"} replacement(s) applied from ${found || "0"} match(es). Style-preserved: ${preserved || "0"}, fallback-font: ${fallback || "0"}.`;
     statusEl.className = "status ok";
   } catch (error) {

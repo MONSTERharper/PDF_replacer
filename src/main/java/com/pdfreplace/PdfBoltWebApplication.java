@@ -5,10 +5,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 import java.nio.file.Path;
 
+/** Spring Boot host for PDFBolt tooling; primary live tool is bolt-replace (PDF text replacement API). */
 @SpringBootApplication
-public class PdfReplacerWebApplication {
+public class PdfBoltWebApplication {
     public static void main(String[] args) {
         EnvFileLoader.loadIfPresent(Path.of(".env"));
-        SpringApplication.run(PdfReplacerWebApplication.class, args);
+        SpringApplication.run(PdfBoltWebApplication.class, args);
     }
 }

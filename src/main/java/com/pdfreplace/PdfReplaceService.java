@@ -1,11 +1,12 @@
 package com.pdfreplace;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.ByteArrayOutputStream;
@@ -22,25 +23,27 @@ import java.util.zip.ZipOutputStream;
 
 @Service
 public class PdfReplaceService {
-    @Value("${pdfreplacer.limits.max-pages:250}")
+    private static final Logger LOGGER = LoggerFactory.getLogger(PdfReplaceService.class);
+
+    @Value("${boltreplacer.limits.max-pages:250}")
     private int maxPages;
 
-    @Value("${pdfreplacer.limits.max-search-length:300}")
+    @Value("${boltreplacer.limits.max-search-length:300}")
     private int maxSearchLength;
 
-    @Value("${pdfreplacer.limits.max-replacement-length:300}")
+    @Value("${boltreplacer.limits.max-replacement-length:300}")
     private int maxReplacementLength;
 
-    @Value("${pdfreplacer.limits.max-files:10}")
+    @Value("${boltreplacer.limits.max-files:10}")
     private int maxFiles;
 
-    @Value("${pdfreplacer.limits.max-file-size-bytes:26214400}")
+    @Value("${boltreplacer.limits.max-file-size-bytes:26214400}")
     private long maxFileSizeBytes;
 
-    @Value("${pdfreplacer.limits.max-total-upload-bytes:104857600}")
+    @Value("${boltreplacer.limits.max-total-upload-bytes:104857600}")
     private long maxTotalUploadBytes;
 
-    @Value("${pdfreplacer.limits.max-total-pages:1000}")
+    @Value("${boltreplacer.limits.max-total-pages:1000}")
     private int maxTotalPages;
 
     public BatchReplacementOutput replaceBatch(
@@ -52,8 +55,7 @@ public class PdfReplaceService {
             String replaceScopeRaw,
             Integer occurrenceIndex,
             boolean preserveStyle,
-            boolean retainMetadata,
-            MultipartFile fallbackFont
+            boolean retainMetadata
     ) throws IOException {
         validateBatch(pdfFiles, searchList, replacementList, replaceScopeRaw, occurrenceIndex);
         DeterministicPdfReplacer.MatchMode matchMode = parseMatchMode(matchModeRaw);
@@ -65,7 +67,7 @@ public class PdfReplaceService {
         int totalPagesProcessed = 0;
         for (MultipartFile pdf : pdfFiles) {
             ReplacementOutput item = replaceSingle(
-                    pdf, rules, strict, matchMode, replaceScope, occurrenceIndex, preserveStyle, retainMetadata, fallbackFont);
+                    pdf, rules, strict, matchMode, replaceScope, occurrenceIndex, preserveStyle, retainMetadata);
             outputs.add(item);
             totalPagesProcessed += item.result().pagesScanned();
             if (totalPagesProcessed > maxTotalPages) {
@@ -108,54 +110,48 @@ public class PdfReplaceService {
             DeterministicPdfReplacer.ReplaceScope replaceScope,
             Integer occurrenceIndex,
             boolean preserveStyle,
-            boolean retainMetadata,
-            MultipartFile fallbackFont
+            boolean retainMetadata
     ) throws IOException {
-        Path workDir = Files.createTempDirectory("pdf-replacer-");
+        Path workDir = Files.createTempDirectory("bolt-replacer-");
         Path input = workDir.resolve("input.pdf");
         Path stageInput = input;
         Path stageOutput = null;
-        Path fontPath = null;
 
         try {
             copyUpload(pdf, input);
             ensureLooksLikePdf(input);
             enforcePageLimit(input);
 
-            File fontFile = null;
-            if (fallbackFont != null && !fallbackFont.isEmpty()) {
-                validateFont(fallbackFont);
-                fontPath = workDir.resolve("fallback-font.ttf");
-                copyUpload(fallbackFont, fontPath);
-                fontFile = fontPath.toFile();
-            }
-
             DeterministicPdfReplacer.Result aggregate = new DeterministicPdfReplacer.Result(0, 0, 0, 0, occurrenceIndex, 0, 0);
             for (int i = 0; i < rules.size(); i++) {
                 ReplacementRule rule = rules.get(i);
                 stageOutput = workDir.resolve("output-" + i + ".pdf");
-                DeterministicPdfReplacer.Result result = DeterministicPdfReplacer.replace(
-                        stageInput.toFile(),
-                        stageOutput.toFile(),
-                        rule.search(),
-                        rule.replacement(),
-                        strict,
-                        fontFile,
-                        matchMode,
-                        replaceScope,
-                        occurrenceIndex,
-                        preserveStyle,
-                        retainMetadata
-                );
-                aggregate = new DeterministicPdfReplacer.Result(
-                        aggregate.pagesScanned() + result.pagesScanned(),
-                        aggregate.matchesFound() + result.matchesFound(),
-                        aggregate.matchesReplaced() + result.matchesReplaced(),
-                        aggregate.segmentsChanged() + result.segmentsChanged(),
-                        occurrenceIndex,
-                        aggregate.stylePreservedCount() + result.stylePreservedCount(),
-                        aggregate.fallbackStyleCount() + result.fallbackStyleCount()
-                );
+                try {
+                    DeterministicPdfReplacer.Result result = DeterministicPdfReplacer.replace(
+                            stageInput.toFile(),
+                            stageOutput.toFile(),
+                            rule.search(),
+                            rule.replacement(),
+                            strict,
+                            null,
+                            matchMode,
+                            replaceScope,
+                            occurrenceIndex,
+                            preserveStyle,
+                            retainMetadata
+                    );
+                    aggregate = new DeterministicPdfReplacer.Result(
+                            aggregate.pagesScanned() + result.pagesScanned(),
+                            aggregate.matchesFound() + result.matchesFound(),
+                            aggregate.matchesReplaced() + result.matchesReplaced(),
+                            aggregate.segmentsChanged() + result.segmentsChanged(),
+                            occurrenceIndex,
+                            aggregate.stylePreservedCount() + result.stylePreservedCount(),
+                            aggregate.fallbackStyleCount() + result.fallbackStyleCount()
+                    );
+                } catch (IOException ex) {
+                    throw wrapReplaceIOException(pdf, i, rule, ex);
+                }
                 stageInput = stageOutput;
             }
 
@@ -166,7 +162,6 @@ public class PdfReplaceService {
             String outputName = outputName(pdf.getOriginalFilename());
             return new ReplacementOutput(outputName, Files.readAllBytes(stageInput), aggregate);
         } finally {
-            deleteIfExists(fontPath);
             deleteIfExists(stageOutput);
             deleteIfExists(input);
             deleteIfExists(workDir);
@@ -278,17 +273,6 @@ public class PdfReplaceService {
         };
     }
 
-    private static void validateFont(MultipartFile font) {
-        String filename = font.getOriginalFilename();
-        if (filename == null || filename.isBlank()) {
-            throw new IllegalArgumentException("Fallback font must be a .ttf or .otf file.");
-        }
-        String lower = filename.toLowerCase(Locale.ROOT);
-        if (!lower.endsWith(".ttf") && !lower.endsWith(".otf")) {
-            throw new IllegalArgumentException("Fallback font must be a .ttf or .otf file.");
-        }
-    }
-
     /**
      * @param role {@code "replaced"} for text replacement; {@code "merged"} when PDFs are combined into one file.
      */
@@ -340,6 +324,52 @@ public class PdfReplaceService {
         } catch (IOException ignored) {
             // Temporary files are best-effort cleanup.
         }
+    }
+
+    /**
+     * Adds file and rule context for API clients and detailed logging for operators (font encoding, I/O, etc.).
+     */
+    private static IOException wrapReplaceIOException(MultipartFile pdf, int ruleIndex, ReplacementRule rule, IOException cause) {
+        String fileLabel = safeFilename(pdf.getOriginalFilename());
+        String searchPreview = previewForLog(rule.search());
+        String summary = cause.getMessage() == null ? cause.getClass().getSimpleName() : cause.getMessage();
+        LOGGER.warn(
+                "Replace failed filename={} ruleIndex={} searchPreview=[{}]: {}",
+                fileLabel,
+                ruleIndex + 1,
+                searchPreview,
+                summary,
+                cause);
+
+        boolean likelyFont = summary.contains("Subset font")
+                || summary.contains("embedded font")
+                || summary.contains("encode")
+                || summary.contains("substitute")
+                || summary.contains("Type3 fonts");
+        String remedies = likelyFont
+                ? " Tip: subset or custom fonts cannot always represent new glyphs—install Unicode fonts "
+                    + "(e.g. fonts-noto) on the server, simplify replacement characters, "
+                    + "or try turning off “preserve style” if the PDF still fails."
+                : " If this repeats, retry with a repaired PDF export or fewer rules at once.";
+        IOException wrapped = new IOException(
+                String.format(
+                        Locale.ROOT,
+                        "PDF processing failed (%s), rule %d of your request, while searching near [%s]. %s%n%s",
+                        fileLabel,
+                        ruleIndex + 1,
+                        searchPreview,
+                        summary,
+                        remedies),
+                cause);
+        return wrapped;
+    }
+
+    private static String previewForLog(String text) {
+        if (text == null) {
+            return "";
+        }
+        String oneLine = text.replace('\n', ' ').replace('\r', ' ');
+        return oneLine.length() <= 72 ? oneLine : oneLine.substring(0, 72) + "…";
     }
 
     public record ReplacementOutput(String filename, byte[] bytes, DeterministicPdfReplacer.Result result) {
